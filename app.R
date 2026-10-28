@@ -63,7 +63,7 @@ get_teams <- function() {                            # optional "Teams" tab: tim
 read_teams <- function(stations) {                  # one row per team: team + (lat, lon or a high point name)
   d <- get_teams()
   if (is.null(d) || !nrow(d)) return(NULL)
-  names(d) <- tolower(trimws(names(d)))
+  names(d) <- tidy_names(names(d))
   if (!"team" %in% names(d)) return(NULL)
   if (!"highpoint" %in% names(d)) d$highpoint <- if ("station" %in% names(d)) d$station else NA_character_
   for (n in c("lat", "lon")) if (!n %in% names(d)) d[[n]] <- NA_character_
@@ -78,10 +78,41 @@ read_teams <- function(stations) {                  # one row per team: team + (
   use_ll <- !is.na(t$lat) & !is.na(t$lon) & abs(t$lat) <= 90 & abs(t$lon) <= 180   # lat/lon wins if both are filled
   use_hp <- !use_ll & !is.na(idx)
   t$lat[use_hp] <- stations$lat[idx[use_hp]]; t$lon[use_hp] <- stations$lon[idx[use_hp]]
+  t$area <- use_ll                                       # lat/lon = a general area (circle); high point = a dot
   ok <- nzchar(t$team) & (use_ll | use_hp)
   good <- t[ok, , drop = FALSE]
   good <- good[!duplicated(tolower(good$team), fromLast = TRUE), ]
-  list(df = good[, c("team", "lat", "lon")], ignored = t$row[!ok])
+  list(df = good[, c("team", "lat", "lon", "area")], ignored = t$row[!ok])
+}
+get_others <- function() {                           # optional "non-tx birds" tab: date, lat, lon, bands
+  if (!LIVE) return(if (file.exists("others.csv")) read.csv("others.csv", stringsAsFactors = FALSE, colClasses = "character") else NULL)
+  cached("others", function() read_tab("non-tx birds"))
+}
+read_others <- function() {                          # untracked birds: one row per sighting
+  d <- get_others()
+  if (is.null(d)) return(list(df = NULL, note = "Non-tx birds: can't read the tab (is it named exactly 'non-tx birds'?)."))
+  if (!nrow(d)) return(list(df = NULL, note = NULL))
+  names(d) <- tidy_names(names(d))
+  names(d)[names(d) %in% c("colour bands", "color bands")] <- "bands"
+  if (!all(c("date", "lat", "lon") %in% names(d)))
+    return(list(df = NULL, note = paste0("Non-tx birds: row 1 needs the headings date, lat and lon (found: ", paste(names(d), collapse = ", "), ").")))
+  if (!"bands" %in% names(d)) d$bands <- ""
+  num <- function(x) suppressWarnings(as.numeric(trimws(as.character(x))))
+  o <- data.frame(row = seq_len(nrow(d)) + 1, raw = trimws(as.character(d$date)), time = parse_time(d$date),
+                  lat = num(d$lat), lon = num(d$lon),
+                  bands = trimws(ifelse(is.na(d$bands), "", as.character(d$bands))), stringsAsFactors = FALSE)
+  o <- o[!(is.na(o$raw) | o$raw == "") | !is.na(o$lat) | !is.na(o$lon), , drop = FALSE]      # skip fully blank rows
+  ok <- !is.na(o$time) & !is.na(o$lat) & !is.na(o$lon) & abs(o$lat) <= 90 & abs(o$lon) <= 180
+  why <- ifelse(is.na(o$time), paste0("date '", o$raw, "' unreadable"), "lat/lon")
+  list(df = o[ok, c("time", "lat", "lon", "bands"), drop = FALSE], note = NULL,
+       ignored_why = paste0(o$row[!ok], " (", why[!ok], ")"), n = sum(ok))
+}
+# "Stay signed in": after a correct password the phone keeps a code that is good until 4am the next morning (Sydney).
+# The code can't be made without the password and the Google key, and it stops working if the password is changed.
+make_token <- function(pw) {
+  f <- tempfile(); on.exit(unlink(f))
+  writeLines(paste(pw, KEY_JSON, SHEET_ID, format(Sys.time() - 4 * 3600, "%Y-%m-%d", tz = TZ)), f)
+  unname(tools::md5sum(f))
 }
 get_password <- function() {                          # NULL means "no usable password": nobody gets in
   if (!LIVE) return(DEMO_PASSWORD)
@@ -94,9 +125,8 @@ get_password <- function() {                          # NULL means "no usable pa
 }
 STATION_KMZ <- "highpoints.kmz"        # optional alternative
 STATION_CSV <- "highpoints.csv"        # columns: name, lon, lat (one row per high point)
-N_BIRDS     <- 15
 FADE_DAYS   <- 7                      # signal this old is drawn at its faintest
-SAT_OPACITY <- 0.7   # satellite image strength: 1 = full colour, lower = paler so the markers stand out (try 0.4 to 0.8)
+SAT_OPACITY <- 1     # satellite image strength: 1 = full colour (lower = paler)
 RUNNER_DAYS <- 7                      # no signal for this many days = "runner" (listed at the bottom)
 LINE_KM     <- c(strong = 3, medium = 5, weak = 15)   # drawn line length (km) by signal strength
 MAX_KM      <- 15                                      # nothing is drawn longer than this
@@ -106,11 +136,13 @@ line_km <- function(strength) {                        # no strength given = wea
   pmin(unname(k), MAX_KM)
 }
 REFRESH_SEC <- 10
+TEAM_AREA_M <- 500    # a team given by lat/lon is drawn as a circle of this radius (metres)
 JITTER_PX  <- 16     # sideways gap (screen pixels) between birds' lines that would otherwise overlap
 JITTER_DEG <- 3      # lines from the same spot within this many degrees count as overlapping
 HIDE_LINES_WHEN_LOCATED <- FALSE  # once a bird has a triangulated point, show just the point (set FALSE to keep its lines too)
 # High-contrast colours, handed out automatically to the birds that are currently being tracked.
-BIRD_COLS <- c("#e6194b", "#1f4fff", "#ff8c00", "#8e24aa", "#00bcd4", "#ff2fbf", "#1b8a3a", "#222222", "#8b4513", "#c9a400")
+# light, bright colours that stand out on the dark satellite image (white, yellow, pink, cyan, orange, lime, ...)
+BIRD_COLS <- c("#ffffff", "#ffe600", "#ff7ad9", "#00f0ff", "#ffa726", "#b2ff3b", "#c8a2ff", "#ff6b6b", "#7db8ff", "#4dffb4")
 TZ          <- "Australia/Sydney"
 Sys.setenv(TZ = TZ)
 M_PER_DEG   <- 111320
@@ -205,6 +237,13 @@ load_stations <- function() {
 }
 
 # ---------------------------------------------------------------- reading the sheet
+# column headings are matched ignoring capitals and any note in brackets; long / lng / longitude all mean lon
+tidy_names <- function(nm) {
+  nm <- tolower(trimws(sub("\\(.*$", "", nm)))
+  nm[nm %in% c("long", "lng", "longitude")] <- "lon"
+  nm[nm == "latitude"] <- "lat"
+  nm
+}
 parse_time <- function(x) {
   x <- trimws(as.character(x))
   out <- as.POSIXct(rep(NA_real_, length(x)), origin = "1970-01-01", tz = TZ)
@@ -227,7 +266,7 @@ parse_time <- function(x) {
 read_entries <- function(stations) {
   raw <- get_signals(); d <- raw$d
   if (is.null(d)) return(list(df = NULL, ignored = integer(), note = raw$note))
-  names(d) <- tolower(trimws(sub("\\(.*$", "", names(d))))      # "time (autofills)" counts as "time"
+  names(d) <- tidy_names(names(d))                          # "time (autofills)" counts as "time"
   d[] <- lapply(d, function(x) trimws(as.character(x)))
   if (nrow(d) == 0)
     return(list(df = data.frame(time = as.POSIXct(character(), tz = TZ), bird = integer(), type = character(),
@@ -250,10 +289,10 @@ read_entries <- function(stations) {
   e$type <- ifelse(has_b & e$station_ok, "station",
             ifelse(has_b & !e$has_station & has_pos, "point",
             ifelse(!has_b & !e$has_station & has_pos, "found", NA)))
-  ok <- !is.na(e$type) & !is.na(e$time) & !is.na(e$bird) & e$bird >= 1 & e$bird <= N_BIRDS &
+  ok <- !is.na(e$type) & !is.na(e$time) & !is.na(e$bird) & e$bird >= 1 &
         (is.na(e$bearing) | (e$bearing >= 0 & e$bearing <= 360))
   why <- ifelse(is.na(e$time), paste0("time '", d$time[match(e$row, d$row)], "' unreadable"),
-         ifelse(is.na(e$bird) | e$bird < 1 | e$bird > N_BIRDS, "bird number",
+         ifelse(is.na(e$bird) | e$bird < 1, "bird number",
          ifelse(!is.na(e$bearing) & (e$bearing < 0 | e$bearing > 360), "bearing",
          ifelse(e$has_station & !e$station_ok, paste0("station '", st_raw[match(e$row, d$row)], "' not in list"), "station/bearing/lat/lon"))))
   list(df = e[ok, c("time", "bird", "type", "station", "lon", "lat", "bearing", "strength")],
@@ -328,18 +367,18 @@ bird_state <- function(b, e, stations) {
 # ---------------------------------------------------------------- UI
 main_ui <- function() fluidPage(
   title = "REHO live tracking",
-  tags$style(HTML(".zoomed-out .station-label { display: none; } .found-star, .chev { background: none; border: none; } .leaflet-container { background: #ffffff; }")),
+  tags$style(HTML(".zoomed-out .station-label, .no-names .station-label { display: none; } .found-star, .chev { background: none; border: none; } .leaflet-container { background: #ffffff; } .map-full { position: fixed !important; top: 0; left: 0; width: 100vw !important; height: 100vh !important; height: 100dvh !important; z-index: 10000; } .full-btn { background: #fff; color: #222; font: bold 14px sans-serif; padding: 9px 12px; border: 2px solid rgba(0,0,0,0.35); border-radius: 6px; cursor: pointer; }")),
   leafletOutput("map", height = "82vh"),
   h2("REHO live tracking"),
   if (!LIVE) div(class = "alert alert-warning", "DEMO MODE: example signals only. Set SHEET_ID and GOOGLE_KEY_JSON for real data."),
-  fluidRow(
-    column(3, checkboxInput("show_old", "Show lines from earlier days", FALSE)),
-    column(5, checkboxInput("asof_on", "View from EOD yesterday", FALSE),
-              conditionalPanel("input.asof_on", dateInput("asof_date", NULL, value = Sys.Date() - 1, weekstart = 1))),
-    column(4, textOutput("status_note"))
-  ),
-  h5("Birds, longest unseen first; runners (never seen, or 7+ days) at the bottom (click a row to zoom)"),
-  DTOutput("tbl")
+  div(style = "display: flex; flex-wrap: wrap; align-items: center; column-gap: 22px;",     # all tick boxes on one line
+      conditionalPanel("!input.asof_on", checkboxInput("show_last", "Last known location", FALSE)),
+      checkboxInput("asof_on", "View from EOD yesterday", FALSE),
+      checkboxInput("show_others", "Non-tx birds", TRUE),
+      checkboxInput("show_labels", "Show high point names", TRUE)),
+  h5("Birds, longest unseen first; runners (no signal in 7+ days) at the bottom (click a row to zoom)"),
+  DTOutput("tbl"),
+  div(style = "margin: 14px 0 24px 0; color: #666; font-size: 13px;", textOutput("status_note"))     # rows read / sheet read time
 )
 gate_ui <- function(msg = NULL) fluidPage(
   div(style = "max-width: 340px; margin: 18vh auto 0 auto;",
@@ -353,7 +392,12 @@ ui <- fluidPage(
             tags$script(HTML("
               function tryLogin(){ Shiny.setInputValue('login_try', {pw: $('#pw').val(), n: Math.random()}, {priority: 'event'}); }
               $(document).on('click', '#login', tryLogin);
-              $(document).on('keydown', '#pw', function(e){ if (e.key === 'Enter') { e.preventDefault(); tryLogin(); } });"))),
+              $(document).on('keydown', '#pw', function(e){ if (e.key === 'Enter') { e.preventDefault(); tryLogin(); } });
+              $(document).on('shiny:connected', function(){
+                Shiny.addCustomMessageHandler('save_token', function(t){ try { localStorage.setItem('reho_tok', t); } catch(e) {} });
+                Shiny.addCustomMessageHandler('hp_labels', function(on){ var m = document.getElementById('map'); if (m) m.classList.toggle('no-names', !on); });
+                try { var t = localStorage.getItem('reho_tok'); if (t) Shiny.setInputValue('saved_token', t, {priority: 'event'}); } catch(e) {}
+              });"))),
   uiOutput("page")
 )
 
@@ -368,11 +412,19 @@ server <- function(input, output, session) {
   authed <- reactiveVal(FALSE); typed <- reactiveVal(NULL); fails <- reactiveVal(0); gate_msg <- reactiveVal(NULL)
   map_ready <- reactiveVal(FALSE)
   output$page <- renderUI(if (authed()) main_ui() else gate_ui(gate_msg()))
+  observeEvent(input$show_labels, session$sendCustomMessage("hp_labels", isTRUE(input$show_labels)))
+  observeEvent(input$saved_token, {                    # a phone that signed in earlier today comes back without the password
+    tk <- input$saved_token
+    if (isTRUE(authed()) || !is.character(tk) || !nzchar(tk)) return()
+    pw <- get_password()
+    if (!is.null(pw) && identical(tk, make_token(pw))) { typed(pw); gate_msg(NULL); fails(0); map_ready(FALSE); authed(TRUE) }
+  })
   observeEvent(input$login_try, {
     if (fails() >= MAX_TRIES) { gate_msg("Too many wrong tries. Reload the page to try again."); return() }
     pw <- get_password()
     if (is.null(pw)) { gate_msg("The map is unavailable right now."); return() }
-    if (identical(trimws(input$login_try$pw), pw)) { typed(pw); gate_msg(NULL); fails(0); map_ready(FALSE); authed(TRUE) }
+    if (identical(trimws(input$login_try$pw), pw)) { typed(pw); gate_msg(NULL); fails(0); map_ready(FALSE); authed(TRUE)
+      session$sendCustomMessage("save_token", make_token(pw)) }
     else { fails(fails() + 1); Sys.sleep(1); gate_msg("Wrong password.") }
   })
   observe({                                            # the password changed in the sheet: sign everyone out
@@ -386,7 +438,7 @@ server <- function(input, output, session) {
 
   sheet <- reactive({ req(authed()); tick(); read_entries(stations) })
   asof_time <- reactive({
-    if (isTRUE(input$asof_on) && !is.null(input$asof_date)) as.POSIXct(paste(format(input$asof_date), "23:59:59"), tz = TZ)
+    if (isTRUE(input$asof_on)) as.POSIXct(paste(format(Sys.Date() - 1), "23:59:59"), tz = TZ)    # the end of yesterday
     else { tick(); Sys.time() }
   })
   bird_colours <- reactive({                              # which colour each bird has right now
@@ -394,9 +446,12 @@ server <- function(input, output, session) {
     assign_colours(s$df[s$df$time <= asof_time(), , drop = FALSE])
   })
   states <- reactive({
-    s <- sheet(); if (is.null(s$df)) return(lapply(1:N_BIRDS, function(b) list(bird = b, never = TRUE)))
+    s <- sheet(); if (is.null(s$df)) return(list())
     e <- s$df[s$df$time <= asof_time(), , drop = FALSE]
-    lapply(seq_len(N_BIRDS), function(b) bird_state(b, e[e$bird == b, , drop = FALSE], stations))
+    birds <- sort(unique(e$bird))                       # any bird number that appears in the sheet
+    out <- lapply(birds, function(b) bird_state(b, e[e$bird == b, , drop = FALSE], stations))
+    names(out) <- as.character(birds)
+    out
   })
 
   output$status_note <- renderText({
@@ -407,6 +462,12 @@ server <- function(input, output, session) {
     msg <- paste0("Stations: ", nrow(stations), ". Rows read: ", nrow(s$df), ".", when)
     if (length(s$ignored)) msg <- paste0(msg, " Ignored sheet rows (check station spelling/blank cells): ",
                                          paste(head(s$ignored_why, 6), collapse = "; "))
+    ob <- read_others()
+    if (!is.null(ob$note)) msg <- paste0(msg, " ", ob$note)
+    else if (!is.null(ob$n)) {
+      msg <- paste0(msg, " Non-tx rows read: ", ob$n, ".")
+      if (length(ob$ignored_why)) msg <- paste0(msg, " Ignored non-tx rows: ", paste(head(ob$ignored_why, 6), collapse = "; "))
+    }
     tg <- teams()
     if (!is.null(tg) && length(tg$ignored)) msg <- paste0(msg, " Ignored Teams rows (need a team name plus lat/lon or a high point): ",
                                                            paste(head(tg$ignored, 10), collapse = ", "))
@@ -420,7 +481,7 @@ server <- function(input, output, session) {
       addTiles(group = "Street map") %>%
       addLayersControl(baseGroups = c("Satellite", "Street map"), options = layersControlOptions(collapsed = TRUE)) %>%
       addCircleMarkers(data = s, lng = ~lon, lat = ~lat, radius = 5, color = "white", weight = 2,
-                       fillColor = "#d81b8c", fillOpacity = 1, label = ~name,
+                       fillColor = "#000000", fillOpacity = 1, label = ~name,
                        labelOptions = labelOptions(noHide = TRUE, direction = "right", className = "station-label", textsize = "10px",
                                            style = list("padding" = "0px 3px", "line-height" = "1.2"))) %>%
       fitBounds(min(s$lon) - pad, min(s$lat) - pad, max(s$lon) + pad, max(s$lat) + pad) %>%
@@ -442,7 +503,9 @@ server <- function(input, output, session) {
             var ux = dx / len, uy = dy / len, px = -uy, py = ux;          // along the line; to its right
             var a2 = L.point(a.x + px * c.off, a.y + py * c.off), b2 = L.point(b.x + px * c.off, b.y + py * c.off);
             var deg = Math.atan2(dx, -dy) * 180 / Math.PI;
-            L.polyline([map.unproject(a2, z), map.unproject(b2, z)], {color: c.col, weight: 3, opacity: c.op})
+            var ends = [map.unproject(a2, z), map.unproject(b2, z)];
+            L.polyline(ends, {color: '#000', weight: 6, opacity: 0.45 * c.op, interactive: false}).addTo(layer);   // dark edge, so light colours show on bright ground
+            L.polyline(ends, {color: c.col, weight: 3, opacity: c.op})
               .bindTooltip(c.label, {sticky: true}).addTo(layer);
             for (var d = GAP; d < len - 10; d += GAP) {
               var p = map.unproject(L.point(a2.x + ux * d, a2.y + uy * d), z);
@@ -454,13 +517,42 @@ server <- function(input, output, session) {
             }
             // bird number just past the tip, a little to the side of the line
             var t = map.unproject(L.point(b2.x + ux * 10 + px * 11, b2.y + uy * 10 + py * 11), z);
-            var shadow = '-1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff';
-            L.marker(t, {icon: L.divIcon({className: 'chev', iconSize: [30, 20], iconAnchor: [15, 10],
-              html: '<div style=\"text-align:center;line-height:20px;font:bold 16px sans-serif;color:' + c.col + ';text-shadow:' + shadow + '\">' + c.bird + '</div>'}),
+            var shadow = '0 0 3px #000, 0 0 3px #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000';
+            L.marker(t, {icon: L.divIcon({className: 'chev', iconSize: [90, 34], iconAnchor: [45, c.tag ? 17 : 10],
+              html: '<div style=\"text-align:center;font:bold 16px/18px sans-serif;color:' + c.col + ';text-shadow:' + shadow + '\">' + c.bird +
+                    (c.tag ? '<div style=\"font-size:11px;line-height:12px;white-space:nowrap\">' + c.tag + '</div>' : '') + '</div>'}),
               interactive: false, keyboard: false, opacity: c.op}).addTo(layer);
           });
         }
         map.on('zoomend', draw);
+        // untracked birds: a white diamond (date label under it); tap for the details
+        var others = L.layerGroup().addTo(map);
+        Shiny.addCustomMessageHandler('others', function(m) {
+          others.clearLayers();
+          (Array.isArray(m) ? m : []).forEach(function(o) {
+            var shadow = '0 0 3px #000, 0 0 3px #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000';
+            var html = '<div style=\"position:relative;width:24px;height:24px\">' +
+              '<div style=\"position:absolute;left:5px;top:5px;width:12px;height:12px;background:#fff;border:2px solid #000;transform:rotate(45deg)\"></div>' +
+              (o.tag ? '<div style=\"position:absolute;top:24px;left:50%;transform:translateX(-50%);white-space:nowrap;font:bold 11px sans-serif;color:#fff;text-shadow:' + shadow + '\">' + o.tag + '</div>' : '') + '</div>';
+            L.marker([o.lat, o.lon], {icon: L.divIcon({className: 'chev', html: html, iconSize: [24, 24], iconAnchor: [11, 11]}), opacity: o.op})
+              .bindPopup(o.popup).addTo(others);
+          });
+        });
+        // full-screen button on the map (CSS based, so it also works on iPhones)
+        var Full = L.Control.extend({ options: { position: 'topleft' }, onAdd: function() {
+          var b = L.DomUtil.create('div', 'full-btn'); b.innerHTML = 'Full screen';
+          L.DomEvent.disableClickPropagation(b);
+          function set(on) {
+            el.classList.toggle('map-full', on);
+            document.body.style.overflow = on ? 'hidden' : '';
+            b.innerHTML = on ? 'Exit full screen' : 'Full screen';
+            setTimeout(function() { map.invalidateSize(); draw(); }, 50);
+          }
+          L.DomEvent.on(b, 'click', function() { set(!el.classList.contains('map-full')); });
+          document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && el.classList.contains('map-full')) set(false); });
+          return b;
+        } });
+        map.addControl(new Full());
         Shiny.addCustomMessageHandler('chevrons', function(m) { chev = Array.isArray(m) ? m : []; draw(); });
       }")
   })
@@ -470,20 +562,26 @@ server <- function(input, output, session) {
     st <- states(); asof <- asof_time(); today <- as.Date(asof, tz = TZ); bcols <- bird_colours()
     proxy <- leafletProxy("map") %>% clearGroup("birds")
     chev <- list()                                     # lines that get direction chevrons (drawn in the browser)
+    now_day <- as.Date(Sys.time(), tz = TZ)
     for (s in st) {
       if (isTRUE(s$never)) next
+      # birds last signalled on the day being viewed are always shown; birds from earlier days only with "Last known location"
+      if (!(s$date == today || (isTRUE(input$show_last) && !isTRUE(input$asof_on)))) next
+      dago <- as.integer(now_day - s$date)
+      tag <- if (dago >= 1 && !isTRUE(input$asof_on)) sprintf("%d day%s ago", dago, if (dago == 1) "" else "s") else ""   # no tag in the yesterday view
       op <- max(0.15, 1 - as.numeric(difftime(asof, s$last_time, units = "days")) / FADE_DAYS)
       col <- unname(bcols[as.character(s$bird)]); if (length(col) != 1 || is.na(col)) col <- "#555555"   # plain text, no names attached
-      if (!is.null(s$lines) && (s$date == today || isTRUE(input$show_old))) {
+      if (!is.null(s$lines)) {
         len <- line_lengths(s$lines)
         for (i in seq_len(nrow(s$lines))) {
           l <- s$lines[i, ]
           ep <- end_point(l$lon, l$lat, l$bearing, len[i])
           chev[[length(chev) + 1]] <- list(
             lon = l$lon, lat = l$lat, elon = ep[["lon"]], elat = ep[["lat"]], op = op, col = col,
-            bird = s$bird, brg = l$bearing, key = l$key, off = 0,
-            label = sprintf("Bird %d: %d° from %s (%s, %.1f km)", s$bird, round(l$bearing),
-                            htmltools::htmlEscape(l$key), if (nzchar(l$strength)) l$strength else "strength not given", round(len[i], 1)))
+            bird = s$bird, brg = l$bearing, key = l$key, off = 0, tag = tag,
+            label = sprintf("Bird %d: %d° from %s (%s, %.1f km), signal %s", s$bird, round(l$bearing),
+                            htmltools::htmlEscape(l$key), if (nzchar(l$strength)) l$strength else "strength not given", round(len[i], 1),
+                            format(l$time, "%a %d %b %H:%M")))
         }
       }
       if (!is.null(s$point)) {
@@ -491,16 +589,17 @@ server <- function(input, output, session) {
         pop <- sprintf("<b>Bird %d</b><br>%s %s<br>Last signal %s", s$bird, s$status,
                        if (nzchar(s$detail)) paste0("(", s$detail, ")") else "",
                        format(s$last_time, "%a %d %b %H:%M"))
-        if (is_found)                                  # found: a big circle in the bird's own colour with a white ring
+        if (is_found)                                  # found: a big circle in the bird's own colour with a dark ring
           proxy <- proxy %>%
-            addCircleMarkers(lng = s$point[1], lat = s$point[2], radius = 12, color = "white", weight = 4,
+            addCircleMarkers(lng = s$point[1], lat = s$point[2], radius = 12, color = "#111111", weight = 4,
                              fillColor = col, fillOpacity = op, opacity = op, group = "birds",
                              popup = pop) %>%
-            addLabelOnlyMarkers(lng = s$point[1], lat = s$point[2], group = "birds", label = as.character(s$bird),
+            addLabelOnlyMarkers(lng = s$point[1], lat = s$point[2], group = "birds",
+                                label = htmltools::HTML(paste0(s$bird, if (nzchar(tag)) paste0("<br><span style='font-size:11px;white-space:nowrap'>", tag, "</span>") else "")),
                                 labelOptions = labelOptions(noHide = TRUE, textOnly = TRUE, direction = "center",
-                                  opacity = op, offset = c(0, -23),          # same look as the numbers on the lines
+                                  opacity = op, offset = c(0, if (nzchar(tag)) -30 else -23),          # same look as the numbers on the lines
                                   style = list(color = col, "font-weight" = "bold", "font-size" = "16px",
-                                               "text-shadow" = "-1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff")))
+                                               "text-shadow" = "0 0 3px #000, 0 0 3px #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000")))
                                                        # no marker where lines cross: the crossing lines are enough
       }
     }
@@ -531,17 +630,46 @@ server <- function(input, output, session) {
     proxy <- leafletProxy("map") %>% clearGroup("teams")
     tm <- teams()$df
     if (is.null(tm) || !nrow(tm)) return()
-    for (i in seq_len(nrow(tm)))
-      proxy <- proxy %>%
-        addCircleMarkers(lng = tm$lon[i], lat = tm$lat[i], radius = 9, color = "white", weight = 3,
-                         fillColor = "#1565c0", fillOpacity = 1, opacity = 1, group = "teams",
-                         label = tm$team[i],
-                         labelOptions = labelOptions(noHide = TRUE, direction = "bottom",
-                                                     style = list("font-weight" = "bold", color = "#1565c0")))
+    lab <- list("font-weight" = "bold", "font-size" = "14px", color = "#ffffff",
+                "text-shadow" = "0 0 3px #000, 0 0 3px #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000")
+    for (i in seq_len(nrow(tm))) {
+      if (isTRUE(tm$area[i])) {                          # general area: a circle, with the team name in the middle
+        proxy <- proxy %>%
+          addCircles(lng = tm$lon[i], lat = tm$lat[i], radius = TEAM_AREA_M, group = "teams", color = "#ffffff", weight = 3,
+                     dashArray = "7,7", opacity = 1, fillColor = "#1e6bff", fillOpacity = 0.28) %>%
+          addLabelOnlyMarkers(lng = tm$lon[i], lat = tm$lat[i], group = "teams", label = tm$team[i],
+                              labelOptions = labelOptions(noHide = TRUE, textOnly = TRUE, direction = "center", style = lab))
+      } else {                                           # at a high point: a dot
+        proxy <- proxy %>%
+          addCircleMarkers(lng = tm$lon[i], lat = tm$lat[i], radius = 9, color = "white", weight = 3,
+                           fillColor = "#1e6bff", fillOpacity = 1, opacity = 1, group = "teams") %>%
+          addLabelOnlyMarkers(lng = tm$lon[i], lat = tm$lat[i], group = "teams", label = tm$team[i],
+                              labelOptions = labelOptions(noHide = TRUE, textOnly = TRUE, direction = "bottom",
+                                                          offset = c(0, 6), style = lab))
+      }
+    }
+  })
+
+  observe({                                              # non-tx birds: shown whenever the tick box is on
+    req(authed(), map_ready())
+    tick(); asof <- asof_time()
+    o <- if (isTRUE(input$show_others)) read_others()$df else NULL
+    out <- list()
+    if (!is.null(o) && nrow(o)) {
+      o <- o[o$time <= asof, , drop = FALSE]            # every sighting up to the day being viewed, whatever its date
+      for (i in seq_len(nrow(o)))
+        out[[i]] <- list(lat = o$lat[i], lon = o$lon[i], tag = "", op = 1,
+                         popup = sprintf("<b>Non-tx bird</b><br>Found %s<br>Colour bands: %s<br>%.5f, %.5f",
+                                         format(o$time[i], "%a %d %b %Y"),
+                                         if (nzchar(o$bands[i])) htmltools::htmlEscape(o$bands[i]) else "not recorded", o$lat[i], o$lon[i]))
+    }
+    session$sendCustomMessage("others", unname(out))
   })
 
   tbl <- reactive({
     st <- states(); asof <- asof_time()
+    if (!length(st)) return(data.frame(Bird = integer(), Status = character(), Last = as.POSIXct(character(), tz = TZ),
+                                       Days = character(), LastTxt = character(), stringsAsFactors = FALSE))
     last <- do.call(c, lapply(st, function(s) if (isTRUE(s$never)) as.POSIXct(NA, tz = TZ) else s$last_time))
     df <- data.frame(Bird = vapply(st, function(s) s$bird, integer(1)),
                      Status = vapply(st, function(s) if (isTRUE(s$never)) "Never seen (runner)" else s$status, character(1)),
@@ -559,10 +687,10 @@ server <- function(input, output, session) {
     d <- tbl()
     datatable(data.frame(Bird = d$Bird, Status = d$Status, `Last signal` = d$LastTxt,
                          `Days since last seen` = d$Days, check.names = FALSE),
-              rownames = FALSE, selection = "single", options = list(dom = "t", pageLength = N_BIRDS, ordering = FALSE))
+              rownames = FALSE, selection = "single", options = list(dom = "t", pageLength = 100, ordering = FALSE))
   })
   observeEvent(input$tbl_rows_selected, {
-    d <- tbl(); b <- d$Bird[input$tbl_rows_selected]; s <- states()[[b]]
+    d <- tbl(); if (!nrow(d)) return(); b <- d$Bird[input$tbl_rows_selected]; s <- states()[[as.character(b)]]
     if (isTRUE(s$never)) return(showNotification(paste0("Bird ", b, " has no entries yet"), duration = 3))
     pos <- if (!is.null(s$point)) s$point else c(s$lines$lon[1], s$lines$lat[1])
     leafletProxy("map") %>% flyTo(pos[1], pos[2], zoom = 12)
