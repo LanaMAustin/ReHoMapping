@@ -343,7 +343,7 @@ main_ui <- function() fluidPage(
 )
 gate_ui <- function(msg = NULL) fluidPage(
   div(style = "max-width: 340px; margin: 18vh auto 0 auto;",
-      h3("REHO live tracking"),
+      h3("Bird signal map"),
       passwordInput("pw", "Password", width = "100%"),
       tags$button(id = "login", type = "button", class = "btn btn-primary", "Open map"),
       if (!is.null(msg)) p(style = "margin-top: 12px; color: #b3261e;", msg))
@@ -495,9 +495,12 @@ server <- function(input, output, session) {
           proxy <- proxy %>%
             addCircleMarkers(lng = s$point[1], lat = s$point[2], radius = 12, color = "white", weight = 4,
                              fillColor = col, fillOpacity = op, opacity = op, group = "birds",
-                             label = as.character(s$bird),
-                             labelOptions = labelOptions(noHide = TRUE, direction = "top", opacity = op, offset = c(0, -8)),
-                             popup = pop)
+                             popup = pop) %>%
+            addLabelOnlyMarkers(lng = s$point[1], lat = s$point[2], group = "birds", label = as.character(s$bird),
+                                labelOptions = labelOptions(noHide = TRUE, textOnly = TRUE, direction = "center",
+                                  opacity = op, offset = c(0, -23),          # same look as the numbers on the lines
+                                  style = list(color = col, "font-weight" = "bold", "font-size" = "16px",
+                                               "text-shadow" = "-1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff")))
                                                        # no marker where lines cross: the crossing lines are enough
       }
     }
