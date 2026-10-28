@@ -343,7 +343,7 @@ main_ui <- function() fluidPage(
 )
 gate_ui <- function(msg = NULL) fluidPage(
   div(style = "max-width: 340px; margin: 18vh auto 0 auto;",
-      h3("Bird signal map"),
+      h3("REHO live tracking"),
       passwordInput("pw", "Password", width = "100%"),
       tags$button(id = "login", type = "button", class = "btn btn-primary", "Open map"),
       if (!is.null(msg)) p(style = "margin-top: 12px; color: #b3261e;", msg))
