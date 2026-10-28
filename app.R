@@ -504,8 +504,8 @@ server <- function(input, output, session) {
             var a2 = L.point(a.x + px * c.off, a.y + py * c.off), b2 = L.point(b.x + px * c.off, b.y + py * c.off);
             var deg = Math.atan2(dx, -dy) * 180 / Math.PI;
             var ends = [map.unproject(a2, z), map.unproject(b2, z)];
-            L.polyline(ends, {color: '#000', weight: 6, opacity: 0.45 * c.op, interactive: false}).addTo(layer);   // dark edge, so light colours show on bright ground
-            L.polyline(ends, {color: c.col, weight: 3, opacity: c.op})
+            L.polyline(ends, {color: '#000', weight: 4, opacity: 0.45 * c.op, interactive: false}).addTo(layer);   // dark edge, so light colours show on bright ground
+            L.polyline(ends, {color: c.col, weight: 2, opacity: c.op})
               .bindTooltip(c.label, {sticky: true}).addTo(layer);
             for (var d = GAP; d < len - 10; d += GAP) {
               var p = map.unproject(L.point(a2.x + ux * d, a2.y + uy * d), z);
