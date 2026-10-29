@@ -397,7 +397,9 @@ bird_trail <- function(b, e, stations, n = TRAIL_N) {
 main_ui <- function() fluidPage(
   title = "REHO live tracking",
   tags$style(HTML(".zoomed-out .station-label, .no-names .station-label { display: none; } .found-star, .chev { background: none; border: none; } .leaflet-container { background: #ffffff; } .leaflet-control-attribution { font-size: 9px !important; line-height: 1.2; } .map-full { position: fixed !important; top: 0; left: 0; width: 100vw !important; height: 100vh !important; height: 100dvh !important; z-index: 10000; } .full-btn { background: #fff; color: #222; font: bold 12px sans-serif; padding: 5px 9px; border: 2px solid rgba(0,0,0,0.35); border-radius: 6px; cursor: pointer; }")),
-  h2("REHO live tracking", style = "margin: 10px 0 8px 0;"),
+  div(style = "display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; margin: 10px 0 8px 0;",
+      h2("REHO live tracking", style = "margin: 0;"),
+      div(style = "color: #666; font-size: 14px;", textOutput("viewers_now", inline = TRUE))),
   leafletOutput("map", height = MAP_HEIGHT),
   if (!LIVE) div(class = "alert alert-warning", "DEMO MODE: example signals only. Set SHEET_ID and GOOGLE_KEY_JSON for real data."),
   div(style = "display: flex; flex-wrap: wrap; align-items: center; column-gap: 22px;",     # all tick boxes on one line
@@ -436,6 +438,7 @@ ui <- fluidPage(
 )
 
 # ---------------------------------------------------------------- server
+viewers <- reactiveVal(0)     # shared by everyone using the app: how many signed-in people have the map open
 server <- function(input, output, session) {
   st_info  <- load_stations()
   stations <- st_info$df
@@ -445,6 +448,14 @@ server <- function(input, output, session) {
   # ---- password gate: the sheet is only read, and nothing is sent to the browser, after a correct password
   authed <- reactiveVal(FALSE); typed <- reactiveVal(NULL); fails <- reactiveVal(0); gate_msg <- reactiveVal(NULL)
   map_ready <- reactiveVal(FALSE)
+  counted <- FALSE                                       # is this phone counted in the viewers total?
+  observe({
+    a <- authed()
+    if (a && !counted) { counted <<- TRUE; viewers(isolate(viewers()) + 1) }
+    else if (!a && counted) { counted <<- FALSE; viewers(max(0, isolate(viewers()) - 1)) }
+  })
+  session$onSessionEnded(function() { if (counted) { counted <<- FALSE; isolate(viewers(max(0, viewers() - 1))) } })
+  output$viewers_now <- renderText(paste0("Viewers now: ", viewers()))
   output$page <- renderUI(if (authed()) main_ui() else gate_ui(gate_msg()))
   observeEvent(input$show_labels, session$sendCustomMessage("hp_labels", isTRUE(input$show_labels)))
   observeEvent(input$saved_token, {                    # a phone that signed in earlier today comes back without the password
