@@ -136,6 +136,7 @@ line_km <- function(strength) {                        # no strength given = wea
   pmin(unname(k), MAX_KM)
 }
 REFRESH_SEC <- 10
+TRAIL_N <- 5          # how many recent positions the bird trail shows
 TEAM_AREA_M <- 500    # a team given by lat/lon is drawn as a circle of this radius (metres)
 JITTER_PX  <- 16     # sideways gap (screen pixels) between birds' lines that would otherwise overlap
 JITTER_DEG <- 3      # lines from the same spot within this many degrees count as overlapping
@@ -364,6 +365,33 @@ bird_state <- function(b, e, stations) {
        detail = detail)
 }
 
+# ---------------------------------------------------------------- recent positions of one bird
+# One position per sighting: every "found" row, plus, for each day, the point where that day's bearings cross
+# (using the bearings after the day's last found row). The newest TRAIL_N are returned, newest first.
+bird_trail <- function(b, e, stations, n = TRAIL_N) {
+  if (is.null(e) || !nrow(e)) return(NULL)
+  e <- e[order(e$time), , drop = FALSE]; e$date <- as.Date(e$time, tz = TZ)
+  pos <- list()
+  f <- e[e$type == "found", , drop = FALSE]
+  for (i in seq_len(nrow(f)))
+    pos[[length(pos) + 1]] <- data.frame(time = f$time[i], lon = f$lon[i], lat = f$lat[i], kind = "Found", stringsAsFactors = FALSE)
+  for (d in unique(e$date)) {
+    ed <- e[e$date == d, , drop = FALSE]
+    fi <- which(ed$type == "found")
+    rest <- if (length(fi)) ed[-seq_len(max(fi)), , drop = FALSE] else ed
+    rest <- rest[rest$type != "found", , drop = FALSE]
+    if (nrow(rest) < 2) next
+    st <- bird_state(b, rest, stations)
+    if (!isTRUE(st$never) && !is.null(st$point) && grepl("^Triangulated", st$status))
+      pos[[length(pos) + 1]] <- data.frame(time = st$last_time, lon = st$point[1], lat = st$point[2],
+                                           kind = paste0("Estimated from bearings: ", tolower(st$status)), stringsAsFactors = FALSE)
+  }
+  if (!length(pos)) return(NULL)
+  df <- do.call(rbind, pos)
+  df <- df[order(df$time, decreasing = TRUE), , drop = FALSE]
+  head(df, n)
+}
+
 # ---------------------------------------------------------------- UI
 main_ui <- function() fluidPage(
   title = "REHO live tracking",
@@ -372,11 +400,11 @@ main_ui <- function() fluidPage(
   h2("REHO live tracking"),
   if (!LIVE) div(class = "alert alert-warning", "DEMO MODE: example signals only. Set SHEET_ID and GOOGLE_KEY_JSON for real data."),
   div(style = "display: flex; flex-wrap: wrap; align-items: center; column-gap: 22px;",     # all tick boxes on one line
-      conditionalPanel("!input.asof_on", checkboxInput("show_last", "Last known location", FALSE)),
+      conditionalPanel("!input.asof_on", checkboxInput("show_last", "Last known location (all birds)", FALSE)),
       checkboxInput("asof_on", "View from EOD yesterday", FALSE),
-      checkboxInput("show_others", "Non-tx birds", TRUE),
+      checkboxInput("show_others", "Non-tx birds", FALSE),
       checkboxInput("show_labels", "Show high point names", TRUE)),
-  h5("Birds, longest unseen first; runners (no signal in 7+ days) at the bottom (click a row to zoom)"),
+  h5("Birds (click a bird to see where it was last seen; click it again to clear)"),
   DTOutput("tbl"),
   div(style = "margin: 14px 0 24px 0; color: #666; font-size: 13px;", textOutput("status_note"))     # rows read / sheet read time
 )
@@ -411,6 +439,7 @@ server <- function(input, output, session) {
   # ---- password gate: the sheet is only read, and nothing is sent to the browser, after a correct password
   authed <- reactiveVal(FALSE); typed <- reactiveVal(NULL); fails <- reactiveVal(0); gate_msg <- reactiveVal(NULL)
   map_ready <- reactiveVal(FALSE)
+  trail_bird <- reactiveVal(NULL)                        # the one bird whose recent positions are being shown
   output$page <- renderUI(if (authed()) main_ui() else gate_ui(gate_msg()))
   observeEvent(input$show_labels, session$sendCustomMessage("hp_labels", isTRUE(input$show_labels)))
   observeEvent(input$saved_token, {                    # a phone that signed in earlier today comes back without the password
@@ -492,7 +521,7 @@ server <- function(input, output, session) {
         map.on('zoomend', f); f();
         // bearing lines, direction chevrons and bird numbers, drawn in screen pixels so that lines which
         // would overlap can be shifted sideways by a fixed number of pixels at any zoom
-        var chev = [], layer = L.layerGroup().addTo(map), GAP = 28;
+        var chev = [], layer = L.layerGroup().addTo(map), GAP = 42;
         function draw() {
           layer.clearLayers();
           var z = map.getZoom();
@@ -504,15 +533,15 @@ server <- function(input, output, session) {
             var a2 = L.point(a.x + px * c.off, a.y + py * c.off), b2 = L.point(b.x + px * c.off, b.y + py * c.off);
             var deg = Math.atan2(dx, -dy) * 180 / Math.PI;
             var ends = [map.unproject(a2, z), map.unproject(b2, z)];
-            L.polyline(ends, {color: '#000', weight: 4, opacity: 0.45 * c.op, interactive: false}).addTo(layer);   // dark edge, so light colours show on bright ground
-            L.polyline(ends, {color: c.col, weight: 2, opacity: c.op})
+            L.polyline(ends, {color: '#000', weight: 3, opacity: 0.45 * c.op, interactive: false}).addTo(layer);   // dark edge, so light colours show on bright ground
+            L.polyline(ends, {color: c.col, weight: 2.5, opacity: c.op})
               .bindTooltip(c.label, {sticky: true}).addTo(layer);
             for (var d = GAP; d < len - 10; d += GAP) {
               var p = map.unproject(L.point(a2.x + ux * d, a2.y + uy * d), z);
-              var svg = '<svg width=\"18\" height=\"18\" viewBox=\"0 0 18 18\" style=\"display:block;transform:rotate(' + deg + 'deg)\">' +
+              var svg = '<svg width=\"13\" height=\"13\" viewBox=\"0 0 18 18\" style=\"display:block;transform:rotate(' + deg + 'deg)\">' +
                 '<path d=\"M3 12 L9 5 L15 12\" fill=\"none\" stroke=\"rgba(0,0,0,0.65)\" stroke-width=\"5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>' +
                 '<path d=\"M3 12 L9 5 L15 12\" fill=\"none\" stroke=\"#fff\" stroke-width=\"2.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>';
-              L.marker(p, {icon: L.divIcon({className: 'chev', html: svg, iconSize: [18, 18], iconAnchor: [9, 9]}),
+              L.marker(p, {icon: L.divIcon({className: 'chev', html: svg, iconSize: [13, 13], iconAnchor: [6, 6]}),
                            interactive: false, keyboard: false, opacity: c.op}).addTo(layer);
             }
             // bird number just past the tip, a little to the side of the line
@@ -538,10 +567,52 @@ server <- function(input, output, session) {
               .bindPopup(o.popup).addTo(others);
           });
         });
+        // one bird's recent positions: numbered dots (1 = newest) joined by a dotted line with arrows
+        var trailLayer = L.layerGroup().addTo(map);
+        Shiny.addCustomMessageHandler('trail', function(m) {
+          trailLayer.clearLayers();
+          var pts = Array.isArray(m) ? m : [];
+          trailPts = pts.map(function(p) { return {lat: p.lat, lon: p.lon}; });
+          if (!pts.length) return;
+          var shadow = '0 0 3px #000, 0 0 3px #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000';
+          var old = pts.slice().reverse();                               // oldest first
+          var ll = old.map(function(p) { return [p.lat, p.lon]; });
+          if (ll.length > 1) {
+            L.polyline(ll, {color: '#000', weight: 6, opacity: 0.5, dashArray: '1,10', lineCap: 'round', interactive: false}).addTo(trailLayer);
+            L.polyline(ll, {color: pts[0].col, weight: 3, dashArray: '1,10', lineCap: 'round', interactive: false}).addTo(trailLayer);
+            for (var i = 0; i < old.length - 1; i++) {
+              var a = map.project(ll[i]), b = map.project(ll[i + 1]);
+              if (Math.sqrt(Math.pow(b.x - a.x, 2) + Math.pow(b.y - a.y, 2)) < 1) continue;
+              var deg = Math.atan2(b.x - a.x, -(b.y - a.y)) * 180 / Math.PI;
+              var mid = [(ll[i][0] + ll[i + 1][0]) / 2, (ll[i][1] + ll[i + 1][1]) / 2];
+              var svg = '<svg width=\"13\" height=\"13\" viewBox=\"0 0 18 18\" style=\"display:block;transform:rotate(' + deg + 'deg)\">' +
+                '<path d=\"M3 12 L9 5 L15 12\" fill=\"none\" stroke=\"rgba(0,0,0,0.65)\" stroke-width=\"5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>' +
+                '<path d=\"M3 12 L9 5 L15 12\" fill=\"none\" stroke=\"#fff\" stroke-width=\"2.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>';
+              L.marker(mid, {icon: L.divIcon({className: 'chev', html: svg, iconSize: [13, 13], iconAnchor: [6, 6]}), interactive: false, keyboard: false}).addTo(trailLayer);
+            }
+          }
+          pts.forEach(function(p) {
+            var html = '<div style=\"position:relative;width:56px;height:24px\">' +
+              '<div style=\"width:52px;height:20px;border-radius:12px;background:' + p.col + ';border:2px solid #111;color:#111;font:bold 12px/20px sans-serif;text-align:center;white-space:nowrap;' +
+              (p.n === 1 ? 'box-shadow:0 0 0 3px #fff;' : '') + '\">' + p.day + '</div>' +
+              '<div style=\"position:absolute;top:27px;left:50%;transform:translateX(-50%);white-space:nowrap;font:bold 11px sans-serif;color:#fff;text-shadow:' + shadow + '\">' + p.when + '</div></div>';
+            L.marker([p.lat, p.lon], {icon: L.divIcon({className: 'chev', html: html, iconSize: [56, 24], iconAnchor: [28, 12]}), zIndexOffset: 1000 - p.n})
+              .bindPopup(p.popup).addTo(trailLayer);
+          });
+        });
         // full-screen button on the map (CSS based, so it also works on iPhones)
+        var fitPts = [], trailPts = [];                                  // what the Fit sightings button zooms to
+        Shiny.addCustomMessageHandler('fitpts', function(m) { fitPts = Array.isArray(m) ? m : []; });
+        function fitSightings() {
+          var pts = fitPts.concat(trailPts).map(function(p) { return [p.lat, p.lon]; });
+          if (pts.length) map.fitBounds(L.latLngBounds(pts), {padding: [40, 40], maxZoom: 15});
+        }
         var Full = L.Control.extend({ options: { position: 'topleft' }, onAdd: function() {
-          var b = L.DomUtil.create('div', 'full-btn'); b.innerHTML = 'Full screen';
-          L.DomEvent.disableClickPropagation(b);
+          var wrap = L.DomUtil.create('div', ''); wrap.style.display = 'flex'; wrap.style.gap = '6px';
+          var b = L.DomUtil.create('div', 'full-btn', wrap); b.innerHTML = 'Full screen';
+          var f = L.DomUtil.create('div', 'full-btn', wrap); f.innerHTML = 'Fit sightings';
+          L.DomEvent.disableClickPropagation(wrap);
+          L.DomEvent.on(f, 'click', fitSightings);
           function set(on) {
             el.classList.toggle('map-full', on);
             document.body.style.overflow = on ? 'hidden' : '';
@@ -550,7 +621,7 @@ server <- function(input, output, session) {
           }
           L.DomEvent.on(b, 'click', function() { set(!el.classList.contains('map-full')); });
           document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && el.classList.contains('map-full')) set(false); });
-          return b;
+          return wrap;
         } });
         map.addControl(new Full());
         Shiny.addCustomMessageHandler('chevrons', function(m) { chev = Array.isArray(m) ? m : []; draw(); });
@@ -562,11 +633,15 @@ server <- function(input, output, session) {
     st <- states(); asof <- asof_time(); today <- as.Date(asof, tz = TZ); bcols <- bird_colours()
     proxy <- leafletProxy("map") %>% clearGroup("birds")
     chev <- list()                                     # lines that get direction chevrons (drawn in the browser)
+    fit <- list()                                      # points the "Fit sightings" button zooms to
     now_day <- as.Date(Sys.time(), tz = TZ)
     for (s in st) {
       if (isTRUE(s$never)) next
-      # birds last signalled on the day being viewed are always shown; birds from earlier days only with "Last known location"
-      if (!(s$date == today || (isTRUE(input$show_last) && !isTRUE(input$asof_on)))) next
+      # a bird picked in the list is shown on its own (whatever its date); otherwise birds last signalled on the day being
+      # viewed are shown, and birds from earlier days only with "Last known location"
+      sel <- trail_bird()
+      if (!is.null(sel)) { if (s$bird != sel) next }
+      else if (!(s$date == today || (isTRUE(input$show_last) && !isTRUE(input$asof_on)))) next
       dago <- as.integer(now_day - s$date)
       tag <- if (dago >= 1 && !isTRUE(input$asof_on)) sprintf("%d day%s ago", dago, if (dago == 1) "" else "s") else ""   # no tag in the yesterday view
       op <- max(0.15, 1 - as.numeric(difftime(asof, s$last_time, units = "days")) / FADE_DAYS)
@@ -576,6 +651,7 @@ server <- function(input, output, session) {
         for (i in seq_len(nrow(s$lines))) {
           l <- s$lines[i, ]
           ep <- end_point(l$lon, l$lat, l$bearing, len[i])
+          fit[[length(fit) + 1]] <- list(lat = l$lat, lon = l$lon); fit[[length(fit) + 1]] <- list(lat = ep[["lat"]], lon = ep[["lon"]])
           chev[[length(chev) + 1]] <- list(
             lon = l$lon, lat = l$lat, elon = ep[["lon"]], elat = ep[["lat"]], op = op, col = col,
             bird = s$bird, brg = l$bearing, key = l$key, off = 0, tag = tag,
@@ -589,6 +665,7 @@ server <- function(input, output, session) {
         pop <- sprintf("<b>Bird %d</b><br>%s %s<br>Last signal %s", s$bird, s$status,
                        if (nzchar(s$detail)) paste0("(", s$detail, ")") else "",
                        format(s$last_time, "%a %d %b %H:%M"))
+        if (is_found) fit[[length(fit) + 1]] <- list(lat = s$point[2], lon = s$point[1])
         if (is_found)                                  # found: a big circle in the bird's own colour with a dark ring
           proxy <- proxy %>%
             addCircleMarkers(lng = s$point[1], lat = s$point[2], radius = 12, color = "#111111", weight = 4,
@@ -622,6 +699,7 @@ server <- function(input, output, session) {
       }
     }
     session$sendCustomMessage("chevrons", unname(chev))
+    session$sendCustomMessage("fitpts", unname(fit))
   })
 
   teams <- reactive({ req(authed()); tick(); read_teams(stations) })
@@ -666,34 +744,61 @@ server <- function(input, output, session) {
     session$sendCustomMessage("others", unname(out))
   })
 
-  tbl <- reactive({
-    st <- states(); asof <- asof_time()
-    if (!length(st)) return(data.frame(Bird = integer(), Status = character(), Last = as.POSIXct(character(), tz = TZ),
-                                       Days = character(), LastTxt = character(), stringsAsFactors = FALSE))
-    last <- do.call(c, lapply(st, function(s) if (isTRUE(s$never)) as.POSIXct(NA, tz = TZ) else s$last_time))
-    df <- data.frame(Bird = vapply(st, function(s) s$bird, integer(1)),
-                     Status = vapply(st, function(s) if (isTRUE(s$never)) "Never seen (runner)" else s$status, character(1)),
-                     Last = last, stringsAsFactors = FALSE)
-    days <- as.numeric(difftime(asof, df$Last, units = "days"))
-    # runner = never seen, or no signal for RUNNER_DAYS or more
-    runner <- is.na(days) | days >= RUNNER_DAYS
-    df$Status <- ifelse(runner & !is.na(days), "Runner (no signal in 7+ days)", df$Status)
-    df$Days <- ifelse(is.na(days), "-", sprintf("%.1f", pmax(days, 0)))
-    df$LastTxt <- ifelse(is.na(df$Last), "-", format(df$Last, "%a %d %b %H:%M"))
-    df <- df[order(runner, df$Last, na.last = TRUE), ]   # active birds first (longest unseen on top), runners last
-    df
+  tbl <- reactive({                                      # one row per bird, in bird-number order
+    st <- states()
+    if (!length(st)) return(data.frame(Bird = integer(), Eyes = character(), Days = character(), stringsAsFactors = FALSE))
+    now_day <- as.Date(Sys.time(), tz = TZ)
+    bird <- vapply(st, function(s) as.integer(s$bird), integer(1))
+    eyes <- vapply(st, function(s) if (!isTRUE(s$never) && identical(s$status, "Found")) "Eyes-on" else "Signals", character(1))
+    dago <- vapply(st, function(s) if (isTRUE(s$never)) NA_integer_ else as.integer(now_day - as.Date(s$last_time, tz = TZ)), integer(1))
+    df <- data.frame(Bird = unname(bird), Eyes = unname(eyes), Days = ifelse(is.na(dago), "-", ifelse(dago <= 0, "today", as.character(dago))),
+                     stringsAsFactors = FALSE)
+    df[order(df$Bird), , drop = FALSE]
   })
   output$tbl <- renderDT({
-    d <- tbl()
-    datatable(data.frame(Bird = d$Bird, Status = d$Status, `Last signal` = d$LastTxt,
-                         `Days since last seen` = d$Days, check.names = FALSE),
-              rownames = FALSE, selection = "single", options = list(dom = "t", pageLength = 100, ordering = FALSE))
+    d <- tbl(); sel <- isolate(trail_bird())     # isolate: picking a bird must not rebuild the whole table
+    datatable(data.frame(Bird = d$Bird, `Eyes-on` = d$Eyes, `Days since detected` = d$Days, check.names = FALSE),
+              rownames = FALSE, selection = list(mode = "single", selected = if (is.null(sel)) NULL else match(sel, d$Bird)),
+              options = list(dom = "t", pageLength = 100, ordering = FALSE))
   })
-  observeEvent(input$tbl_rows_selected, {
-    d <- tbl(); if (!nrow(d)) return(); b <- d$Bird[input$tbl_rows_selected]; s <- states()[[as.character(b)]]
-    if (isTRUE(s$never)) return(showNotification(paste0("Bird ", b, " has no entries yet"), duration = 3))
-    pos <- if (!is.null(s$point)) s$point else c(s$lines$lon[1], s$lines$lat[1])
-    leafletProxy("map") %>% flyTo(pos[1], pos[2], zoom = 12)
+
+  trail <- reactive({                                    # recent positions of the picked bird
+    b <- trail_bird(); if (is.null(b)) return(NULL)
+    s <- sheet(); if (is.null(s$df)) return(NULL)
+    e <- s$df[s$df$bird == b & s$df$time <= asof_time(), , drop = FALSE]
+    bird_trail(b, e, stations)
+  })
+  observe({
+    req(authed(), map_ready())
+    tr <- trail(); b <- trail_bird()
+    out <- list()
+    if (!is.null(tr) && !is.null(b)) {
+      col <- unname(bird_colours()[as.character(b)]); if (length(col) != 1 || is.na(col)) col <- "#555555"
+      for (i in seq_len(nrow(tr)))
+        out[[i]] <- list(lat = tr$lat[i], lon = tr$lon[i], n = i, col = col, day = sub("^0", "", format(tr$time[i], "%d %b")), when = format(tr$time[i], "%H:%M"),
+                         popup = sprintf("<b>Bird %d, position %d</b> (1 = newest)<br>%s<br>%s<br>%.5f, %.5f", b, i,
+                                         format(tr$time[i], "%a %d %b %Y %H:%M"), tr$kind[i], tr$lat[i], tr$lon[i]))
+    }
+    session$sendCustomMessage("trail", unname(out))
+  })
+  observeEvent(input$tbl_cell_clicked, {                 # click a bird to show its trail; click it again to clear
+    cl <- input$tbl_cell_clicked
+    if (is.null(cl$row)) return()
+    d <- isolate(tbl()); if (!nrow(d) || cl$row > nrow(d)) return()
+    b <- d$Bird[cl$row]
+    if (identical(isolate(trail_bird()), b)) { trail_bird(NULL); return() }
+    trail_bird(b)
+    s <- isolate(sheet())
+    tr <- if (is.null(s$df)) NULL else bird_trail(b, s$df[s$df$bird == b & s$df$time <= isolate(asof_time()), , drop = FALSE], stations)
+    px <- if (!is.null(tr)) tr else {
+      st <- isolate(states())[[as.character(b)]]
+      if (isTRUE(st$never)) NULL else if (!is.null(st$point)) data.frame(lon = st$point[1], lat = st$point[2])
+      else data.frame(lon = st$lines$lon[1], lat = st$lines$lat[1])
+    }
+    if (is.null(px)) return(showNotification(paste0("Bird ", b, " has no entries yet"), duration = 3))
+    if (is.null(tr)) showNotification(paste0("Bird ", b, " has no known position yet, only single bearings"), duration = 4)
+    pad <- 0.004
+    leafletProxy("map") %>% fitBounds(min(px$lon) - pad, min(px$lat) - pad, max(px$lon) + pad, max(px$lat) + pad)
   })
 }
 
