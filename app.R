@@ -716,7 +716,7 @@ server <- function(input, output, session) {
         var sLine = mk('div', 'width:38px;height:3px;background:#ff5cc8;border-radius:2px;box-shadow:0 0 0 1.5px rgba(0,0,0,0.6);position:relative');
         sLine.appendChild(mk('span', 'position:absolute;left:11px;top:-11px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000', '\\u203A'));
         sLine.appendChild(mk('span', 'position:absolute;left:25px;top:-11px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000', '\\u203A'));
-        legend.appendChild(lrow(sLine, 'Signal line. Arrows point away from where it was heard; the number at the tip is the bird. Each bird keeps its own colour while it is being tracked.'));
+        legend.appendChild(lrow(sLine, 'Signal line and direction; bird number at tip'));
         var ns = 'http://www.w3.org/2000/svg', star = document.createElementNS(ns, 'svg');
         star.setAttribute('width', '22'); star.setAttribute('height', '22'); star.setAttribute('viewBox', '0 0 32 32');
         var poly = document.createElementNS(ns, 'polygon');
