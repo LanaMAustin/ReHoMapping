@@ -142,8 +142,8 @@ JITTER_PX  <- 16     # sideways gap (screen pixels) between birds' lines that wo
 JITTER_DEG <- 3      # lines from the same spot within this many degrees count as overlapping
 HIDE_LINES_WHEN_LOCATED <- FALSE  # once a bird has a triangulated point, show just the point (set FALSE to keep its lines too)
 # High-contrast colours, handed out automatically to the birds that are currently being tracked.
-# light, bright colours that stand out on the dark satellite image (white, yellow, pink, cyan, orange, lime, ...)
-BIRD_COLS <- c("#ffffff", "#ffe600", "#ff7ad9", "#00f0ff", "#ffa726", "#b2ff3b", "#c8a2ff", "#ff6b6b", "#7db8ff", "#4dffb4")
+# light, bright colours that stand out on the dark satellite image. No yellow, orange or gold: gold is for found birds.
+BIRD_COLS <- c("#ffffff", "#ff5cc8", "#00f0ff", "#7dff3b", "#ff6b6b", "#c8a2ff", "#5b9dff", "#2ee6c0", "#c4c4c4", "#9a7bff")
 TZ          <- "Australia/Sydney"
 Sys.setenv(TZ = TZ)
 M_PER_DEG   <- 111320
@@ -400,11 +400,10 @@ main_ui <- function() fluidPage(
   h2("REHO live tracking"),
   if (!LIVE) div(class = "alert alert-warning", "DEMO MODE: example signals only. Set SHEET_ID and GOOGLE_KEY_JSON for real data."),
   div(style = "display: flex; flex-wrap: wrap; align-items: center; column-gap: 22px;",     # all tick boxes on one line
-      conditionalPanel("!input.asof_on", checkboxInput("show_last", "Last known location (all birds)", FALSE)),
       checkboxInput("asof_on", "View from EOD yesterday", FALSE),
       checkboxInput("show_others", "Non-tx birds", FALSE),
       checkboxInput("show_labels", "Show high point names", TRUE)),
-  h5("Birds (click a bird to see where it was last seen; click it again to clear)"),
+  h5("Birds (tick one or more birds to see their last five days; untick to clear)"),
   DTOutput("tbl"),
   div(style = "margin: 14px 0 24px 0; color: #666; font-size: 13px;", textOutput("status_note"))     # rows read / sheet read time
 )
@@ -421,6 +420,12 @@ ui <- fluidPage(
               function tryLogin(){ Shiny.setInputValue('login_try', {pw: $('#pw').val(), n: Math.random()}, {priority: 'event'}); }
               $(document).on('click', '#login', tryLogin);
               $(document).on('keydown', '#pw', function(e){ if (e.key === 'Enter') { e.preventDefault(); tryLogin(); } });
+              window.rehoSel = [];
+              window.rehoSync = function(a){ a = a || []; $('.bird-tick').each(function(){ this.checked = a.indexOf(Number($(this).data('bird'))) >= 0; }); };
+              $(document).on('change', '.bird-tick', function(){
+                var a = $('.bird-tick:checked').map(function(){ return Number($(this).data('bird')); }).get();
+                if (window.rehoSelect) window.rehoSelect(a); else window.rehoSync([]);
+              });
               $(document).on('shiny:connected', function(){
                 Shiny.addCustomMessageHandler('save_token', function(t){ try { localStorage.setItem('reho_tok', t); } catch(e) {} });
                 Shiny.addCustomMessageHandler('hp_labels', function(on){ var m = document.getElementById('map'); if (m) m.classList.toggle('no-names', !on); });
@@ -439,7 +444,6 @@ server <- function(input, output, session) {
   # ---- password gate: the sheet is only read, and nothing is sent to the browser, after a correct password
   authed <- reactiveVal(FALSE); typed <- reactiveVal(NULL); fails <- reactiveVal(0); gate_msg <- reactiveVal(NULL)
   map_ready <- reactiveVal(FALSE)
-  trail_bird <- reactiveVal(NULL)                        # the one bird whose recent positions are being shown
   output$page <- renderUI(if (authed()) main_ui() else gate_ui(gate_msg()))
   observeEvent(input$show_labels, session$sendCustomMessage("hp_labels", isTRUE(input$show_labels)))
   observeEvent(input$saved_token, {                    # a phone that signed in earlier today comes back without the password
@@ -519,13 +523,43 @@ server <- function(input, output, session) {
         var map = this;
         function f() { el.classList.toggle('zoomed-out', map.getZoom() < 11); }
         map.on('zoomend', f); f();
-        // bearing lines, direction chevrons and bird numbers, drawn in screen pixels so that lines which
-        // would overlap can be shifted sideways by a fixed number of pixels at any zoom
-        var chev = [], layer = L.layerGroup().addTo(map), GAP = 42;
+        // bearing lines, direction chevrons, bird numbers and found stars are drawn here, in screen pixels, so that lines which
+        // would overlap can be shifted sideways at any zoom. Ticking a bird in the list only shows or hides things here, so it is instant.
+        var chev = [], founds = [], trails = {}, sel = [], layer = L.layerGroup().addTo(map), GAP = 42, JITTER = 16, JDEG = 3;
+        window.rehoSel = [];
+        var shadow = '0 0 3px #000, 0 0 3px #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000';
+        function visible(arr) { return !sel.length ? arr.filter(function(c) { return c.vis; }) : []; }       // a ticked bird is drawn by renderTrail instead
+        function jitter(items) {            // lines from the same spot at (nearly) the same bearing are fanned out sideways
+          items.forEach(function(c) { c.off = 0; });
+          var byKey = {};
+          items.forEach(function(c) { (byKey[c.key] = byKey[c.key] || []).push(c); });
+          Object.keys(byKey).forEach(function(k) {
+            var g = byKey[k].slice().sort(function(a, b) { return a.brg - b.brg; });
+            var clusters = [], anchor = null;
+            g.forEach(function(c) {
+              var d = anchor === null ? 999 : Math.abs((((c.brg - anchor + 180) % 360) + 360) % 360 - 180);
+              if (anchor === null || d > JDEG) { clusters.push([]); anchor = c.brg; }
+              clusters[clusters.length - 1].push(c);
+            });
+            clusters.forEach(function(cl) {
+              cl.sort(function(a, b) { return a.bird - b.bird; });
+              if (cl.length > 1) cl.forEach(function(c, i) { c.off = (i - (cl.length - 1) / 2) * JITTER; });
+            });
+          });
+        }
+        function addStar(c, lyr) {                                      // found birds: a gold star with the bird number above it
+          var star = '<svg width=\"22\" height=\"22\" viewBox=\"0 0 32 32\" style=\"display:block\"><polygon points=\"16.0,2.5 19.4,11.8 29.3,12.2 21.5,18.3 24.2,27.8 16.0,22.3 7.8,27.8 10.5,18.3 2.7,12.2 12.6,11.8\" fill=\"' + (c.col || '#FFC400') + '\" stroke=\"#111\" stroke-width=\"2\" stroke-linejoin=\"round\"/></svg>';
+          var html = '<div style=\"position:relative;width:22px;height:22px\">' + star +
+            '<div style=\"position:absolute;bottom:23px;left:50%;transform:translateX(-50%);text-align:center;white-space:nowrap;font:bold 16px/18px sans-serif;color:' + (c.col || '#FFC400') + ';text-shadow:' + shadow + '\">' + c.bird +
+            (c.tag ? '<div style=\"font-size:11px;line-height:12px\">' + c.tag + '</div>' : '') + '</div></div>';
+          L.marker([c.lat, c.lon], {icon: L.divIcon({className: 'chev', html: html, iconSize: [22, 22], iconAnchor: [11, 11]}), opacity: c.op})
+            .bindPopup(c.popup).addTo(lyr);
+        }
         function draw() {
           layer.clearLayers();
-          var z = map.getZoom();
-          chev.forEach(function(c) {
+          var z = map.getZoom(), vis = visible(chev);
+          jitter(vis);
+          vis.forEach(function(c) {
             var a = map.project([c.lat, c.lon], z), b = map.project([c.elat, c.elon], z);
             var dx = b.x - a.x, dy = b.y - a.y, len = Math.sqrt(dx * dx + dy * dy);
             if (len < 1) return;
@@ -546,11 +580,13 @@ server <- function(input, output, session) {
             }
             // bird number just past the tip, a little to the side of the line
             var t = map.unproject(L.point(b2.x + ux * 10 + px * 11, b2.y + uy * 10 + py * 11), z);
-            var shadow = '0 0 3px #000, 0 0 3px #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000';
             L.marker(t, {icon: L.divIcon({className: 'chev', iconSize: [90, 34], iconAnchor: [45, c.tag ? 17 : 10],
               html: '<div style=\"text-align:center;font:bold 16px/18px sans-serif;color:' + c.col + ';text-shadow:' + shadow + '\">' + c.bird +
                     (c.tag ? '<div style=\"font-size:11px;line-height:12px;white-space:nowrap\">' + c.tag + '</div>' : '') + '</div>'}),
               interactive: false, keyboard: false, opacity: c.op}).addTo(layer);
+          });
+          visible(founds).forEach(function(c) {                           // found birds: a gold star with the bird number above it
+            addStar(c, layer);
           });
         }
         map.on('zoomend', draw);
@@ -567,39 +603,68 @@ server <- function(input, output, session) {
               .bindPopup(o.popup).addTo(others);
           });
         });
-        // one bird's recent positions: numbered dots (1 = newest) joined by a dotted line with arrows
+        // a ticked bird: its signal lines from its last few days as dotted lines with chevrons and an x-days-ago label,
+        // and a gold star (with the same label) for every confirmed location
         var trailLayer = L.layerGroup().addTo(map);
-        Shiny.addCustomMessageHandler('trail', function(m) {
+        function hist(b) { return trails[String(b)] || {lines: [], stars: []}; }
+        function trailLL(birds) {
+          var pts = [];
+          birds.forEach(function(b) {
+            var h = hist(b);
+            h.lines.forEach(function(c) { pts.push([c.lat, c.lon]); pts.push([c.elat, c.elon]); });
+            h.stars.forEach(function(c) { pts.push([c.lat, c.lon]); });
+          });
+          return pts;
+        }
+        function renderTrail() {
           trailLayer.clearLayers();
-          var pts = Array.isArray(m) ? m : [];
-          trailPts = pts.map(function(p) { return {lat: p.lat, lon: p.lon}; });
-          if (!pts.length) return;
-          var shadow = '0 0 3px #000, 0 0 3px #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000';
-          var old = pts.slice().reverse();                               // oldest first
-          var ll = old.map(function(p) { return [p.lat, p.lon]; });
-          if (ll.length > 1) {
-            L.polyline(ll, {color: '#000', weight: 6, opacity: 0.5, dashArray: '1,10', lineCap: 'round', interactive: false}).addTo(trailLayer);
-            L.polyline(ll, {color: pts[0].col, weight: 3, dashArray: '1,10', lineCap: 'round', interactive: false}).addTo(trailLayer);
-            for (var i = 0; i < old.length - 1; i++) {
-              var a = map.project(ll[i]), b = map.project(ll[i + 1]);
-              if (Math.sqrt(Math.pow(b.x - a.x, 2) + Math.pow(b.y - a.y, 2)) < 1) continue;
-              var deg = Math.atan2(b.x - a.x, -(b.y - a.y)) * 180 / Math.PI;
-              var mid = [(ll[i][0] + ll[i + 1][0]) / 2, (ll[i][1] + ll[i + 1][1]) / 2];
+          if (!sel.length) return;
+          var z = map.getZoom(), items = [], stars = [];
+          sel.forEach(function(b) { var h = hist(b); items = items.concat(h.lines); stars = stars.concat(h.stars); });
+          jitter(items);
+          items.forEach(function(c) {
+            var a = map.project([c.lat, c.lon], z), b = map.project([c.elat, c.elon], z);
+            var dx = b.x - a.x, dy = b.y - a.y, len = Math.sqrt(dx * dx + dy * dy);
+            if (len < 1) return;
+            var ux = dx / len, uy = dy / len, px = -uy, py = ux;
+            var a2 = L.point(a.x + px * c.off, a.y + py * c.off), b2 = L.point(b.x + px * c.off, b.y + py * c.off);
+            var deg = Math.atan2(dx, -dy) * 180 / Math.PI, ends = [map.unproject(a2, z), map.unproject(b2, z)];
+            L.polyline(ends, {color: '#000', weight: 5, opacity: 0.5, dashArray: '1,9', lineCap: 'round', interactive: false}).addTo(trailLayer);
+            L.polyline(ends, {color: c.col, weight: 3, dashArray: '1,9', lineCap: 'round'}).bindTooltip(c.label, {sticky: true}).addTo(trailLayer);
+            for (var d = GAP; d < len - 10; d += GAP) {
+              var p = map.unproject(L.point(a2.x + ux * d, a2.y + uy * d), z);
               var svg = '<svg width=\"13\" height=\"13\" viewBox=\"0 0 18 18\" style=\"display:block;transform:rotate(' + deg + 'deg)\">' +
                 '<path d=\"M3 12 L9 5 L15 12\" fill=\"none\" stroke=\"rgba(0,0,0,0.65)\" stroke-width=\"5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>' +
                 '<path d=\"M3 12 L9 5 L15 12\" fill=\"none\" stroke=\"#fff\" stroke-width=\"2.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>';
-              L.marker(mid, {icon: L.divIcon({className: 'chev', html: svg, iconSize: [13, 13], iconAnchor: [6, 6]}), interactive: false, keyboard: false}).addTo(trailLayer);
+              L.marker(p, {icon: L.divIcon({className: 'chev', html: svg, iconSize: [13, 13], iconAnchor: [6, 6]}), interactive: false, keyboard: false}).addTo(trailLayer);
             }
-          }
-          pts.forEach(function(p) {
-            var html = '<div style=\"position:relative;width:56px;height:24px\">' +
-              '<div style=\"width:52px;height:20px;border-radius:12px;background:' + p.col + ';border:2px solid #111;color:#111;font:bold 12px/20px sans-serif;text-align:center;white-space:nowrap;' +
-              (p.n === 1 ? 'box-shadow:0 0 0 3px #fff;' : '') + '\">' + p.day + '</div>' +
-              '<div style=\"position:absolute;top:27px;left:50%;transform:translateX(-50%);white-space:nowrap;font:bold 11px sans-serif;color:#fff;text-shadow:' + shadow + '\">' + p.when + '</div></div>';
-            L.marker([p.lat, p.lon], {icon: L.divIcon({className: 'chev', html: html, iconSize: [56, 24], iconAnchor: [28, 12]}), zIndexOffset: 1000 - p.n})
-              .bindPopup(p.popup).addTo(trailLayer);
+            var t = map.unproject(L.point(b2.x + ux * 10 + px * 11, b2.y + uy * 10 + py * 11), z);
+            L.marker(t, {icon: L.divIcon({className: 'chev', iconSize: [90, 20], iconAnchor: [45, 10],
+              html: '<div style=\"text-align:center;white-space:nowrap;font:bold 12px/14px sans-serif;color:' + c.col + ';text-shadow:' + shadow + '\">' + c.tag + '</div>'}),
+              interactive: false, keyboard: false}).addTo(trailLayer);
           });
-        });
+          stars.forEach(function(c) { addStar(c, trailLayer); });
+        }
+        map.on('zoomend', renderTrail);
+        Shiny.addCustomMessageHandler('trails', function(m) { trails = (m && !Array.isArray(m)) ? m : {}; renderTrail(); });
+        function toast(t) {
+          var d = document.createElement('div');
+          d.style.cssText = 'position:absolute;left:50%;bottom:30px;transform:translateX(-50%);z-index:1200;background:rgba(20,20,20,0.9);color:#fff;padding:8px 12px;border-radius:8px;font:13px sans-serif';
+          d.textContent = t; el.appendChild(d); setTimeout(function() { d.remove(); }, 3500);
+        }
+        // ticking birds in the list (the list calls this with the bird numbers ticked; an empty list clears)
+        var resetBtn = null;
+        window.rehoSelect = function(a) {
+          var was = sel;
+          sel = Array.isArray(a) ? a : [];
+          window.rehoSel = sel;
+          if (window.rehoSync) window.rehoSync(sel);
+          renderTrail(); draw();
+          if (!sel.length) return;
+          var pts = trailLL(sel);
+          if (pts.length) map.fitBounds(L.latLngBounds(pts), {padding: [50, 50], maxZoom: 15});
+          sel.forEach(function(b) { if (was.indexOf(b) < 0 && !hist(b).lines.length && !hist(b).stars.length) toast('Bird ' + b + ' has no entries yet'); });
+        };
         // long press (or right-click) on the map: a popup with a link that opens Google Maps directions to that spot
         (function() {
           var timer = null, sx = 0, sy = 0, downs = 0;
@@ -635,7 +700,7 @@ server <- function(input, output, session) {
         // full-screen button on the map (CSS based, so it also works on iPhones)
         // legend panel (opened with the Legend button)
         var legend = document.createElement('div');
-        legend.style.cssText = 'display:none;position:absolute;top:130px;left:10px;z-index:1000;max-width:270px;max-height:calc(100% - 150px);overflow:auto;' +
+        legend.style.cssText = 'display:none;position:absolute;top:262px;left:10px;z-index:1000;max-width:270px;max-height:calc(100% - 280px);overflow:auto;' +
           'background:rgba(20,20,20,0.9);color:#fff;border-radius:8px;padding:10px 12px;font:13px/1.3 sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.5)';
         L.DomEvent.disableClickPropagation(legend); L.DomEvent.disableScrollPropagation(legend);
         function mk(tag, css, text) { var e = document.createElement(tag); if (css) e.style.cssText = css; if (text) e.textContent = text; return e; }
@@ -647,15 +712,24 @@ server <- function(input, output, session) {
         function head(t) { return mk('div', 'font-weight:bold;margin:10px 0 2px;color:#ffd54f', t); }
         legend.appendChild(mk('div', 'font-weight:bold;font-size:15px', 'Legend'));
         legend.appendChild(head('Tracked birds'));
-        var sLine = mk('div', 'width:38px;height:3px;background:#ffe600;border-radius:2px;box-shadow:0 0 0 1.5px rgba(0,0,0,0.6);position:relative');
+        var sLine = mk('div', 'width:38px;height:3px;background:#ff5cc8;border-radius:2px;box-shadow:0 0 0 1.5px rgba(0,0,0,0.6);position:relative');
         sLine.appendChild(mk('span', 'position:absolute;left:11px;top:-11px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000', '\\u203A'));
         sLine.appendChild(mk('span', 'position:absolute;left:25px;top:-11px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000', '\\u203A'));
         legend.appendChild(lrow(sLine, 'Signal line. Arrows point away from where it was heard; the number at the tip is the bird. Each bird keeps its own colour while it is being tracked.'));
-        legend.appendChild(lrow(mk('div', 'width:16px;height:16px;border-radius:50%;background:#ffe600;border:2px solid #111'), 'Bird found (eyes-on), in the bird colour.'));
-        legend.appendChild(lrow(mk('div', 'font:bold 11px sans-serif;color:#fff;white-space:nowrap;text-shadow:0 0 3px #000,0 0 3px #000', '2 days ago'), 'Shown under older birds when Last known location is ticked.'));
-        legend.appendChild(head('Selected bird (click it in the list)'));
-        legend.appendChild(lrow(mk('div', 'width:34px;height:14px;border-radius:9px;background:#ffe600;border:2px solid #111;box-shadow:0 0 0 2px #fff;font:bold 9px/14px sans-serif;color:#111;text-align:center', '29 Oct'), 'Latest position, with a white ring. The date is in the tag and the time under it.'));
-        legend.appendChild(lrow(mk('div', 'width:34px;height:14px;border-radius:9px;background:#ffe600;border:2px solid #111;font:bold 9px/14px sans-serif;color:#111;text-align:center', '28 Oct'), 'Earlier positions. A dotted line with arrows joins them, oldest to newest.'));
+        var ns = 'http://www.w3.org/2000/svg', star = document.createElementNS(ns, 'svg');
+        star.setAttribute('width', '22'); star.setAttribute('height', '22'); star.setAttribute('viewBox', '0 0 32 32');
+        var poly = document.createElementNS(ns, 'polygon');
+        poly.setAttribute('points', '16.0,2.5 19.4,11.8 29.3,12.2 21.5,18.3 24.2,27.8 16.0,22.3 7.8,27.8 10.5,18.3 2.7,12.2 12.6,11.8');
+        poly.setAttribute('fill', '#FFC400'); poly.setAttribute('stroke', '#111'); poly.setAttribute('stroke-width', '2'); poly.setAttribute('stroke-linejoin', 'round');
+        star.appendChild(poly);
+        legend.appendChild(lrow(star, 'Bird found (eyes-on): a gold star, and the number above it says which bird.'));
+        legend.appendChild(head('Ticked birds (tick them in the list)'));
+        var dl = mk('div', 'width:40px;height:0;border-top:3px dotted #00f0ff;position:relative');
+        dl.appendChild(mk('span', 'position:absolute;left:14px;top:-13px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000', '\\u203A'));
+        legend.appendChild(lrow(dl, 'Past signal lines (last five days), dotted, with arrows and how many days ago. Each ticked bird has its own colour.'));
+        var star2 = star.cloneNode(true); star2.firstChild.setAttribute('fill', '#00f0ff');
+        legend.appendChild(lrow(star2, 'A confirmed location, in the bird colour, with how many days ago.'));
+        legend.appendChild(lrow(mk('div', 'font:bold 11px sans-serif;color:#fff;border:1px solid #fff;border-radius:6px;padding:3px 5px;text-align:center', 'Reset selections'), 'Unticks every bird and returns to today (button on the map).'));
         legend.appendChild(head('Teams'));
         legend.appendChild(lrow(mk('div', 'width:14px;height:14px;border-radius:50%;background:#1e6bff;border:2px solid #fff'), 'Team at a high point.'));
         legend.appendChild(lrow(mk('div', 'width:26px;height:26px;border-radius:50%;background:rgba(30,107,255,0.28);border:2px dashed #fff'), 'Team in a general area (500 m).'));
@@ -665,17 +739,22 @@ server <- function(input, output, session) {
         legend.appendChild(head('Tip'));
         legend.appendChild(mk('div', 'margin:4px 0 2px', 'Press and hold on the map for directions in Google Maps.'));
         el.appendChild(legend);
-        var fitPts = [], trailPts = [];                                  // what the Fit sightings button zooms to
-        Shiny.addCustomMessageHandler('fitpts', function(m) { fitPts = Array.isArray(m) ? m : []; });
-        function fitSightings() {
-          var pts = fitPts.concat(trailPts).map(function(p) { return [p.lat, p.lon]; });
+        function fitSightings() {                                       // whatever is showing now (or the ticked bird's trail)
+          var pts = [];
+          if (sel.length) pts = trailLL(sel);
+          else {
+            visible(chev).forEach(function(c) { pts.push([c.lat, c.lon]); pts.push([c.elat, c.elon]); });
+            visible(founds).forEach(function(c) { pts.push([c.lat, c.lon]); });
+          }
           if (pts.length) map.fitBounds(L.latLngBounds(pts), {padding: [40, 40], maxZoom: 15});
         }
         var Full = L.Control.extend({ options: { position: 'topleft' }, onAdd: function() {
-          var wrap = L.DomUtil.create('div', ''); wrap.style.display = 'flex'; wrap.style.gap = '6px';
+          var wrap = L.DomUtil.create('div', ''); wrap.style.display = 'flex'; wrap.style.flexDirection = 'column'; wrap.style.alignItems = 'flex-start'; wrap.style.gap = '6px';
           var b = L.DomUtil.create('div', 'full-btn', wrap); b.innerHTML = 'Full screen';
           var f = L.DomUtil.create('div', 'full-btn', wrap); f.innerHTML = 'Fit sightings';
           var lg = L.DomUtil.create('div', 'full-btn', wrap); lg.innerHTML = 'Legend';
+          var rs = L.DomUtil.create('div', 'full-btn', wrap); rs.innerHTML = 'Reset selections'; resetBtn = rs;
+          L.DomEvent.on(rs, 'click', function() { window.rehoSelect([]); fitSightings(); });
           L.DomEvent.on(lg, 'click', function() { legend.style.display = legend.style.display === 'none' ? 'block' : 'none'; });
           L.DomEvent.disableClickPropagation(wrap);
           L.DomEvent.on(f, 'click', fitSightings);
@@ -691,23 +770,19 @@ server <- function(input, output, session) {
         } });
         map.addControl(new Full());
         Shiny.addCustomMessageHandler('chevrons', function(m) { chev = Array.isArray(m) ? m : []; draw(); });
+        Shiny.addCustomMessageHandler('founds', function(m) { founds = Array.isArray(m) ? m : []; draw(); });
       }")
   })
 
   observe({
     req(authed(), map_ready())
     st <- states(); asof <- asof_time(); today <- as.Date(asof, tz = TZ); bcols <- bird_colours()
-    proxy <- leafletProxy("map") %>% clearGroup("birds")
-    chev <- list()                                     # lines that get direction chevrons (drawn in the browser)
-    fit <- list()                                      # points the "Fit sightings" button zooms to
+    chev <- list()                                     # every bird's lines; the browser shows the ones it should (vis = shown without a tick)
+    founds <- list()                                   # every found bird's star
     now_day <- as.Date(Sys.time(), tz = TZ)
     for (s in st) {
       if (isTRUE(s$never)) next
-      # a bird picked in the list is shown on its own (whatever its date); otherwise birds last signalled on the day being
-      # viewed are shown, and birds from earlier days only with "Last known location"
-      sel <- trail_bird()
-      if (!is.null(sel)) { if (s$bird != sel) next }
-      else if (!(s$date == today || (isTRUE(input$show_last) && !isTRUE(input$asof_on)))) next
+      vis <- isTRUE(s$date == today)
       dago <- as.integer(now_day - s$date)
       tag <- if (dago >= 1 && !isTRUE(input$asof_on)) sprintf("%d day%s ago", dago, if (dago == 1) "" else "s") else ""   # no tag in the yesterday view
       op <- max(0.15, 1 - as.numeric(difftime(asof, s$last_time, units = "days")) / FADE_DAYS)
@@ -717,55 +792,22 @@ server <- function(input, output, session) {
         for (i in seq_len(nrow(s$lines))) {
           l <- s$lines[i, ]
           ep <- end_point(l$lon, l$lat, l$bearing, len[i])
-          fit[[length(fit) + 1]] <- list(lat = l$lat, lon = l$lon); fit[[length(fit) + 1]] <- list(lat = ep[["lat"]], lon = ep[["lon"]])
           chev[[length(chev) + 1]] <- list(
-            lon = l$lon, lat = l$lat, elon = ep[["lon"]], elat = ep[["lat"]], op = op, col = col,
-            bird = s$bird, brg = l$bearing, key = l$key, off = 0, tag = tag,
-            label = sprintf("Bird %d: %d° from %s (%s, %.1f km), signal %s", s$bird, round(l$bearing),
+            lon = l$lon, lat = l$lat, elon = ep[["lon"]], elat = ep[["lat"]], op = op, col = col, vis = vis,
+            bird = s$bird, brg = l$bearing, key = l$key, tag = tag,
+            label = sprintf("Bird %d: %d\u00b0 from %s (%s, %.1f km), signal %s", s$bird, round(l$bearing),
                             htmltools::htmlEscape(l$key), if (nzchar(l$strength)) l$strength else "strength not given", round(len[i], 1),
                             format(l$time, "%a %d %b %H:%M")))
         }
       }
-      if (!is.null(s$point)) {
-        is_found <- identical(s$status, "Found")
-        pop <- sprintf("<b>Bird %d</b><br>%s %s<br>Last signal %s", s$bird, s$status,
-                       if (nzchar(s$detail)) paste0("(", s$detail, ")") else "",
-                       format(s$last_time, "%a %d %b %H:%M"))
-        if (is_found) fit[[length(fit) + 1]] <- list(lat = s$point[2], lon = s$point[1])
-        if (is_found)                                  # found: a big circle in the bird's own colour with a dark ring
-          proxy <- proxy %>%
-            addCircleMarkers(lng = s$point[1], lat = s$point[2], radius = 8, color = "#111111", weight = 3,
-                             fillColor = col, fillOpacity = op, opacity = op, group = "birds",
-                             popup = pop) %>%
-            addLabelOnlyMarkers(lng = s$point[1], lat = s$point[2], group = "birds",
-                                label = htmltools::HTML(paste0(s$bird, if (nzchar(tag)) paste0("<br><span style='font-size:11px;white-space:nowrap'>", tag, "</span>") else "")),
-                                labelOptions = labelOptions(noHide = TRUE, textOnly = TRUE, direction = "center",
-                                  opacity = op, offset = c(0, if (nzchar(tag)) -25 else -18),          # same look as the numbers on the lines
-                                  style = list(color = col, "font-weight" = "bold", "font-size" = "16px",
-                                               "text-shadow" = "0 0 3px #000, 0 0 3px #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000")))
-                                                       # no marker where lines cross: the crossing lines are enough
-      }
-    }
-    # jitter: lines from the same spot at (nearly) the same bearing are fanned out sideways so each stays visible
-    if (length(chev) > 1) {
-      keys <- vapply(chev, function(z) z$key, ""); brg <- vapply(chev, function(z) z$brg, 0)
-      bird <- vapply(chev, function(z) z$bird, 0)
-      grp <- rep(NA_integer_, length(chev)); g <- 0L
-      for (k in unique(keys)) {
-        ii <- which(keys == k); ii <- ii[order(brg[ii])]
-        anchor <- NA
-        for (i in ii) {
-          if (is.na(anchor) || abs(((brg[i] - anchor + 180) %% 360) - 180) > JITTER_DEG) { g <- g + 1L; anchor <- brg[i] }
-          grp[i] <- g
-        }
-      }
-      for (gg in unique(grp)) {
-        ii <- which(grp == gg); ii <- ii[order(bird[ii])]
-        if (length(ii) > 1) for (r in seq_along(ii)) chev[[ii[r]]]$off <- (r - (length(ii) + 1) / 2) * JITTER_PX
-      }
+      if (!is.null(s$point) && identical(s$status, "Found"))
+        founds[[length(founds) + 1]] <- list(
+          lon = s$point[1], lat = s$point[2], op = op, vis = vis, bird = s$bird, tag = tag,
+          popup = sprintf("<b>Bird %d</b><br>%s %s<br>Last signal %s", s$bird, s$status,
+                          if (nzchar(s$detail)) paste0("(", s$detail, ")") else "", format(s$last_time, "%a %d %b %H:%M")))
     }
     session$sendCustomMessage("chevrons", unname(chev))
-    session$sendCustomMessage("fitpts", unname(fit))
+    session$sendCustomMessage("founds", unname(founds))
   })
 
   teams <- reactive({ req(authed()); tick(); read_teams(stations) })
@@ -822,49 +864,53 @@ server <- function(input, output, session) {
     df[order(df$Bird), , drop = FALSE]
   })
   output$tbl <- renderDT({
-    d <- tbl(); sel <- isolate(trail_bird())     # isolate: picking a bird must not rebuild the whole table
-    datatable(data.frame(Bird = d$Bird, `Eyes-on` = d$Eyes, `Days since detected` = d$Days, check.names = FALSE),
-              rownames = FALSE, selection = list(mode = "single", selected = if (is.null(sel)) NULL else match(sel, d$Bird)),
-              options = list(dom = "t", pageLength = 100, ordering = FALSE))
+    d <- tbl()
+    box <- sprintf("<input type='checkbox' class='bird-tick' data-bird='%d' style='width:20px;height:20px;margin:0'>", d$Bird)
+    datatable(data.frame(` ` = box, Bird = d$Bird, `Eyes-on` = d$Eyes, `Days since detected` = d$Days, check.names = FALSE),
+              rownames = FALSE, escape = FALSE, selection = "none",
+              options = list(dom = "t", pageLength = 100, ordering = FALSE,
+                             drawCallback = JS("function() { if (window.rehoSync) window.rehoSync(window.rehoSel); }")))
   })
 
-  trail <- reactive({                                    # recent positions of the picked bird
-    b <- trail_bird(); if (is.null(b)) return(NULL)
-    s <- sheet(); if (is.null(s$df)) return(NULL)
-    e <- s$df[s$df$bird == b & s$df$time <= asof_time(), , drop = FALSE]
-    bird_trail(b, e, stations)
+  # every bird's last positions are sent to the phone at once, so ticking a bird needs no round trip to the server
+  trails_all <- reactive({
+    s <- sheet(); asof <- asof_time(); bcols <- bird_colours()
+    out <- list(); now_day <- as.Date(Sys.time(), tz = TZ)
+    if (is.null(s$df)) return(out)
+    for (b in sort(unique(s$df$bird))) {
+      e <- s$df[s$df$bird == b & s$df$time <= asof, , drop = FALSE]
+      if (!nrow(e)) next
+      e$date <- as.Date(e$time, tz = TZ)
+      days <- head(sort(unique(e$date), decreasing = TRUE), TRAIL_N)       # the bird's last TRAIL_N days with entries
+      col <- unname(bcols[as.character(b)]); if (length(col) != 1 || is.na(col)) col <- "#555555"
+      lines <- list(); stars <- list()
+      for (d in days) {
+        d <- as.Date(d, origin = "1970-01-01")
+        ago <- as.integer(now_day - d)
+        tag <- if (ago <= 0) "today" else sprintf("%d day%s ago", ago, if (ago == 1) "" else "s")
+        ed <- e[e$date == d, , drop = FALSE]
+        f <- ed[ed$type == "found", , drop = FALSE]
+        for (i in seq_len(nrow(f)))
+          stars[[length(stars) + 1]] <- list(lat = f$lat[i], lon = f$lon[i], bird = b, tag = tag, op = 1, col = col,
+            popup = sprintf("<b>Bird %d</b><br>Found %s<br>%.5f, %.5f", b, format(f$time[i], "%a %d %b %Y %H:%M"), f$lat[i], f$lon[i]))
+        stt <- bird_state(b, ed, stations)
+        if (isTRUE(stt$never) || is.null(stt$lines) || !nrow(stt$lines)) next
+        len <- line_lengths(stt$lines)
+        for (i in seq_len(nrow(stt$lines))) {
+          l <- stt$lines[i, ]; ep <- end_point(l$lon, l$lat, l$bearing, len[i])
+          lines[[length(lines) + 1]] <- list(lon = l$lon, lat = l$lat, elon = ep[["lon"]], elat = ep[["lat"]], col = col, bird = b,
+            brg = l$bearing, key = l$key, tag = tag,
+            label = sprintf("Bird %d: %d\u00b0 from %s (%s), %s", b, round(l$bearing), htmltools::htmlEscape(l$key),
+                            if (nzchar(l$strength)) l$strength else "strength not given", format(l$time, "%a %d %b %H:%M")))
+        }
+      }
+      if (length(lines) || length(stars)) out[[as.character(b)]] <- list(lines = unname(lines), stars = unname(stars))
+    }
+    out
   })
   observe({
     req(authed(), map_ready())
-    tr <- trail(); b <- trail_bird()
-    out <- list()
-    if (!is.null(tr) && !is.null(b)) {
-      col <- unname(bird_colours()[as.character(b)]); if (length(col) != 1 || is.na(col)) col <- "#555555"
-      for (i in seq_len(nrow(tr)))
-        out[[i]] <- list(lat = tr$lat[i], lon = tr$lon[i], n = i, col = col, day = sub("^0", "", format(tr$time[i], "%d %b")), when = format(tr$time[i], "%H:%M"),
-                         popup = sprintf("<b>Bird %d, position %d</b> (1 = newest)<br>%s<br>%s<br>%.5f, %.5f", b, i,
-                                         format(tr$time[i], "%a %d %b %Y %H:%M"), tr$kind[i], tr$lat[i], tr$lon[i]))
-    }
-    session$sendCustomMessage("trail", unname(out))
-  })
-  observeEvent(input$tbl_cell_clicked, {                 # click a bird to show its trail; click it again to clear
-    cl <- input$tbl_cell_clicked
-    if (is.null(cl$row)) return()
-    d <- isolate(tbl()); if (!nrow(d) || cl$row > nrow(d)) return()
-    b <- d$Bird[cl$row]
-    if (identical(isolate(trail_bird()), b)) { trail_bird(NULL); return() }
-    trail_bird(b)
-    s <- isolate(sheet())
-    tr <- if (is.null(s$df)) NULL else bird_trail(b, s$df[s$df$bird == b & s$df$time <= isolate(asof_time()), , drop = FALSE], stations)
-    px <- if (!is.null(tr)) tr else {
-      st <- isolate(states())[[as.character(b)]]
-      if (isTRUE(st$never)) NULL else if (!is.null(st$point)) data.frame(lon = st$point[1], lat = st$point[2])
-      else data.frame(lon = st$lines$lon[1], lat = st$lines$lat[1])
-    }
-    if (is.null(px)) return(showNotification(paste0("Bird ", b, " has no entries yet"), duration = 3))
-    if (is.null(tr)) showNotification(paste0("Bird ", b, " has no known position yet, only single bearings"), duration = 4)
-    pad <- 0.004
-    leafletProxy("map") %>% fitBounds(min(px$lon) - pad, min(px$lat) - pad, max(px$lon) + pad, max(px$lat) + pad)
+    session$sendCustomMessage("trails", trails_all())
   })
 }
 
