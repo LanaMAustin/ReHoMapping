@@ -396,7 +396,7 @@ bird_trail <- function(b, e, stations, n = TRAIL_N) {
 # ---------------------------------------------------------------- UI
 main_ui <- function() fluidPage(
   title = "REHO live tracking",
-  tags$style(HTML(".zoomed-out .station-label, .no-names .station-label { display: none; } .found-star, .chev { background: none; border: none; } .leaflet-container { background: #ffffff; } .map-full { position: fixed !important; top: 0; left: 0; width: 100vw !important; height: 100vh !important; height: 100dvh !important; z-index: 10000; } .full-btn { background: #fff; color: #222; font: bold 12px sans-serif; padding: 5px 9px; border: 2px solid rgba(0,0,0,0.35); border-radius: 6px; cursor: pointer; }")),
+  tags$style(HTML(".zoomed-out .station-label, .no-names .station-label { display: none; } .found-star, .chev { background: none; border: none; } .leaflet-container { background: #ffffff; } .leaflet-control-attribution { font-size: 9px !important; line-height: 1.2; } .map-full { position: fixed !important; top: 0; left: 0; width: 100vw !important; height: 100vh !important; height: 100dvh !important; z-index: 10000; } .full-btn { background: #fff; color: #222; font: bold 12px sans-serif; padding: 5px 9px; border: 2px solid rgba(0,0,0,0.35); border-radius: 6px; cursor: pointer; }")),
   h2("REHO live tracking", style = "margin: 10px 0 8px 0;"),
   leafletOutput("map", height = MAP_HEIGHT),
   if (!LIVE) div(class = "alert alert-warning", "DEMO MODE: example signals only. Set SHEET_ID and GOOGLE_KEY_JSON for real data."),
@@ -701,7 +701,7 @@ server <- function(input, output, session) {
         // full-screen button on the map (CSS based, so it also works on iPhones)
         // legend panel (opened with the Legend button)
         var legend = document.createElement('div');
-        legend.style.cssText = 'display:none;position:absolute;bottom:178px;left:10px;z-index:1000;max-width:270px;max-height:calc(100% - 198px);overflow:auto;' +
+        legend.style.cssText = 'display:none;position:absolute;bottom:214px;left:10px;z-index:1000;max-width:270px;max-height:calc(100% - 234px);overflow:auto;' +
           'background:rgba(20,20,20,0.9);color:#fff;border-radius:8px;padding:10px 12px;font:13px/1.3 sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.5)';
         L.DomEvent.disableClickPropagation(legend); L.DomEvent.disableScrollPropagation(legend);
         function mk(tag, css, text) { var e = document.createElement(tag); if (css) e.style.cssText = css; if (text) e.textContent = text; return e; }
@@ -748,7 +748,7 @@ server <- function(input, output, session) {
           if (pts.length) map.fitBounds(L.latLngBounds(pts), {padding: [40, 40], maxZoom: 15});
         }
         var Full = L.Control.extend({ options: { position: 'bottomleft' }, onAdd: function() {
-          var wrap = L.DomUtil.create('div', ''); wrap.style.display = 'flex'; wrap.style.flexDirection = 'column'; wrap.style.marginBottom = '26px'; wrap.style.alignItems = 'flex-start'; wrap.style.gap = '6px';
+          var wrap = L.DomUtil.create('div', ''); wrap.style.display = 'flex'; wrap.style.flexDirection = 'column'; wrap.style.marginBottom = '62px'; wrap.style.alignItems = 'flex-start'; wrap.style.gap = '6px';
           var lg = L.DomUtil.create('div', 'full-btn', wrap); lg.innerHTML = 'Legend';
           var b = L.DomUtil.create('div', 'full-btn', wrap); b.innerHTML = 'Full screen';
           var f = L.DomUtil.create('div', 'full-btn', wrap); f.innerHTML = 'Fit sightings';
