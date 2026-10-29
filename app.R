@@ -701,7 +701,7 @@ server <- function(input, output, session) {
         // full-screen button on the map (CSS based, so it also works on iPhones)
         // legend panel (opened with the Legend button)
         var legend = document.createElement('div');
-        legend.style.cssText = 'display:none;position:absolute;bottom:150px;left:10px;z-index:1000;max-width:270px;max-height:calc(100% - 170px);overflow:auto;' +
+        legend.style.cssText = 'display:none;position:absolute;bottom:178px;left:10px;z-index:1000;max-width:270px;max-height:calc(100% - 198px);overflow:auto;' +
           'background:rgba(20,20,20,0.9);color:#fff;border-radius:8px;padding:10px 12px;font:13px/1.3 sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.5)';
         L.DomEvent.disableClickPropagation(legend); L.DomEvent.disableScrollPropagation(legend);
         function mk(tag, css, text) { var e = document.createElement(tag); if (css) e.style.cssText = css; if (text) e.textContent = text; return e; }
@@ -748,10 +748,10 @@ server <- function(input, output, session) {
           if (pts.length) map.fitBounds(L.latLngBounds(pts), {padding: [40, 40], maxZoom: 15});
         }
         var Full = L.Control.extend({ options: { position: 'bottomleft' }, onAdd: function() {
-          var wrap = L.DomUtil.create('div', ''); wrap.style.display = 'flex'; wrap.style.flexDirection = 'column'; wrap.style.alignItems = 'flex-start'; wrap.style.gap = '6px';
+          var wrap = L.DomUtil.create('div', ''); wrap.style.display = 'flex'; wrap.style.flexDirection = 'column'; wrap.style.marginBottom = '26px'; wrap.style.alignItems = 'flex-start'; wrap.style.gap = '6px';
+          var lg = L.DomUtil.create('div', 'full-btn', wrap); lg.innerHTML = 'Legend';
           var b = L.DomUtil.create('div', 'full-btn', wrap); b.innerHTML = 'Full screen';
           var f = L.DomUtil.create('div', 'full-btn', wrap); f.innerHTML = 'Fit sightings';
-          var lg = L.DomUtil.create('div', 'full-btn', wrap); lg.innerHTML = 'Legend';
           var rs = L.DomUtil.create('div', 'full-btn', wrap); rs.innerHTML = 'Reset'; resetBtn = rs;
           L.DomEvent.on(rs, 'click', function() { window.rehoSelect([]); fitSightings(); });
           L.DomEvent.on(lg, 'click', function() { legend.style.display = legend.style.display === 'none' ? 'block' : 'none'; });
