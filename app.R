@@ -600,7 +600,71 @@ server <- function(input, output, session) {
               .bindPopup(p.popup).addTo(trailLayer);
           });
         });
+        // long press (or right-click) on the map: a popup with a link that opens Google Maps directions to that spot
+        (function() {
+          var timer = null, sx = 0, sy = 0, downs = 0;
+          function stop() { if (timer) { clearTimeout(timer); timer = null; } }
+          function openAt(cx, cy) {
+            var r = el.getBoundingClientRect();
+            var ll = map.containerPointToLatLng(L.point(cx - r.left, cy - r.top));
+            var box = document.createElement('div');
+            var t = document.createElement('div'); t.style.marginBottom = '6px'; t.textContent = ll.lat.toFixed(5) + ', ' + ll.lng.toFixed(5);
+            var a = document.createElement('a');
+            a.href = 'https://www.google.com/maps/dir/?api=1&destination=' + ll.lat.toFixed(6) + ',' + ll.lng.toFixed(6) + '&travelmode=driving';
+            a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Directions in Google Maps';
+            a.style.cssText = 'display:inline-block;padding:8px 10px;background:#1a73e8;color:#fff;border-radius:6px;font-weight:bold;text-decoration:none';
+            box.appendChild(t); box.appendChild(a);
+            L.popup().setLatLng(ll).setContent(box).openOn(map);
+            try { if (navigator.vibrate) navigator.vibrate(25); } catch (e) {}
+          }
+          function onControl(e) { return e.target && e.target.closest && e.target.closest('.leaflet-control, .leaflet-popup, .leaflet-marker-icon'); }
+          el.addEventListener('pointerdown', function(e) {
+            downs++; stop();
+            if (downs > 1 || onControl(e)) return;                       // pinch zoom, or a button / marker
+            sx = e.clientX; sy = e.clientY;
+            timer = setTimeout(function() { timer = null; openAt(sx, sy); }, 650);
+          });
+          el.addEventListener('pointermove', function(e) { if (timer && Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) > 10) stop(); });
+          ['pointerup', 'pointercancel'].forEach(function(n) { el.addEventListener(n, function() { downs = Math.max(0, downs - 1); stop(); }); });
+          map.on('movestart zoomstart', stop);
+          el.addEventListener('contextmenu', function(e) {
+            if (onControl(e)) return;
+            e.preventDefault(); stop(); openAt(e.clientX, e.clientY);
+          });
+        })();
         // full-screen button on the map (CSS based, so it also works on iPhones)
+        // legend panel (opened with the Legend button)
+        var legend = document.createElement('div');
+        legend.style.cssText = 'display:none;position:absolute;top:130px;left:10px;z-index:1000;max-width:270px;max-height:calc(100% - 150px);overflow:auto;' +
+          'background:rgba(20,20,20,0.9);color:#fff;border-radius:8px;padding:10px 12px;font:13px/1.3 sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.5)';
+        L.DomEvent.disableClickPropagation(legend); L.DomEvent.disableScrollPropagation(legend);
+        function mk(tag, css, text) { var e = document.createElement(tag); if (css) e.style.cssText = css; if (text) e.textContent = text; return e; }
+        function lrow(sample, text) {
+          var r = mk('div', 'display:flex;align-items:center;gap:10px;margin:7px 0');
+          var sb = mk('div', 'width:56px;flex:none;display:flex;justify-content:center;align-items:center'); sb.appendChild(sample);
+          r.appendChild(sb); r.appendChild(mk('div', 'flex:1', text)); return r;
+        }
+        function head(t) { return mk('div', 'font-weight:bold;margin:10px 0 2px;color:#ffd54f', t); }
+        legend.appendChild(mk('div', 'font-weight:bold;font-size:15px', 'Legend'));
+        legend.appendChild(head('Tracked birds'));
+        var sLine = mk('div', 'width:38px;height:3px;background:#ffe600;border-radius:2px;box-shadow:0 0 0 1.5px rgba(0,0,0,0.6);position:relative');
+        sLine.appendChild(mk('span', 'position:absolute;left:11px;top:-11px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000', '\\u203A'));
+        sLine.appendChild(mk('span', 'position:absolute;left:25px;top:-11px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000', '\\u203A'));
+        legend.appendChild(lrow(sLine, 'Signal line. Arrows point away from where it was heard; the number at the tip is the bird. Each bird keeps its own colour while it is being tracked.'));
+        legend.appendChild(lrow(mk('div', 'width:16px;height:16px;border-radius:50%;background:#ffe600;border:2px solid #111'), 'Bird found (eyes-on), in the bird colour.'));
+        legend.appendChild(lrow(mk('div', 'font:bold 11px sans-serif;color:#fff;white-space:nowrap;text-shadow:0 0 3px #000,0 0 3px #000', '2 days ago'), 'Shown under older birds when Last known location is ticked.'));
+        legend.appendChild(head('Selected bird (click it in the list)'));
+        legend.appendChild(lrow(mk('div', 'width:34px;height:14px;border-radius:9px;background:#ffe600;border:2px solid #111;box-shadow:0 0 0 2px #fff;font:bold 9px/14px sans-serif;color:#111;text-align:center', '29 Oct'), 'Latest position, with a white ring. The date is in the tag and the time under it.'));
+        legend.appendChild(lrow(mk('div', 'width:34px;height:14px;border-radius:9px;background:#ffe600;border:2px solid #111;font:bold 9px/14px sans-serif;color:#111;text-align:center', '28 Oct'), 'Earlier positions. A dotted line with arrows joins them, oldest to newest.'));
+        legend.appendChild(head('Teams'));
+        legend.appendChild(lrow(mk('div', 'width:14px;height:14px;border-radius:50%;background:#1e6bff;border:2px solid #fff'), 'Team at a high point.'));
+        legend.appendChild(lrow(mk('div', 'width:26px;height:26px;border-radius:50%;background:rgba(30,107,255,0.28);border:2px dashed #fff'), 'Team in a general area (500 m).'));
+        legend.appendChild(head('Other'));
+        legend.appendChild(lrow(mk('div', 'width:10px;height:10px;border-radius:50%;background:#000;border:2px solid #fff'), 'High point. Names show when zoomed in.'));
+        legend.appendChild(lrow(mk('div', 'width:11px;height:11px;background:#fff;border:2px solid #000;transform:rotate(45deg)'), 'Non-tx bird. Tap for the date found and colour bands.'));
+        legend.appendChild(head('Tip'));
+        legend.appendChild(mk('div', 'margin:4px 0 2px', 'Press and hold on the map for directions in Google Maps.'));
+        el.appendChild(legend);
         var fitPts = [], trailPts = [];                                  // what the Fit sightings button zooms to
         Shiny.addCustomMessageHandler('fitpts', function(m) { fitPts = Array.isArray(m) ? m : []; });
         function fitSightings() {
@@ -611,6 +675,8 @@ server <- function(input, output, session) {
           var wrap = L.DomUtil.create('div', ''); wrap.style.display = 'flex'; wrap.style.gap = '6px';
           var b = L.DomUtil.create('div', 'full-btn', wrap); b.innerHTML = 'Full screen';
           var f = L.DomUtil.create('div', 'full-btn', wrap); f.innerHTML = 'Fit sightings';
+          var lg = L.DomUtil.create('div', 'full-btn', wrap); lg.innerHTML = 'Legend';
+          L.DomEvent.on(lg, 'click', function() { legend.style.display = legend.style.display === 'none' ? 'block' : 'none'; });
           L.DomEvent.disableClickPropagation(wrap);
           L.DomEvent.on(f, 'click', fitSightings);
           function set(on) {
@@ -668,13 +734,13 @@ server <- function(input, output, session) {
         if (is_found) fit[[length(fit) + 1]] <- list(lat = s$point[2], lon = s$point[1])
         if (is_found)                                  # found: a big circle in the bird's own colour with a dark ring
           proxy <- proxy %>%
-            addCircleMarkers(lng = s$point[1], lat = s$point[2], radius = 12, color = "#111111", weight = 4,
+            addCircleMarkers(lng = s$point[1], lat = s$point[2], radius = 8, color = "#111111", weight = 3,
                              fillColor = col, fillOpacity = op, opacity = op, group = "birds",
                              popup = pop) %>%
             addLabelOnlyMarkers(lng = s$point[1], lat = s$point[2], group = "birds",
                                 label = htmltools::HTML(paste0(s$bird, if (nzchar(tag)) paste0("<br><span style='font-size:11px;white-space:nowrap'>", tag, "</span>") else "")),
                                 labelOptions = labelOptions(noHide = TRUE, textOnly = TRUE, direction = "center",
-                                  opacity = op, offset = c(0, if (nzchar(tag)) -30 else -23),          # same look as the numbers on the lines
+                                  opacity = op, offset = c(0, if (nzchar(tag)) -25 else -18),          # same look as the numbers on the lines
                                   style = list(color = col, "font-weight" = "bold", "font-size" = "16px",
                                                "text-shadow" = "0 0 3px #000, 0 0 3px #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000")))
                                                        # no marker where lines cross: the crossing lines are enough
