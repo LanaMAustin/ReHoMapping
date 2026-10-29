@@ -723,13 +723,13 @@ server <- function(input, output, session) {
         poly.setAttribute('points', '16.0,2.5 19.4,11.8 29.3,12.2 21.5,18.3 24.2,27.8 16.0,22.3 7.8,27.8 10.5,18.3 2.7,12.2 12.6,11.8');
         poly.setAttribute('fill', '#FFC400'); poly.setAttribute('stroke', '#111'); poly.setAttribute('stroke-width', '2'); poly.setAttribute('stroke-linejoin', 'round');
         star.appendChild(poly);
-        legend.appendChild(lrow(star, 'Bird found (eyes-on): a gold star, and the number above it says which bird.'));
+        legend.appendChild(lrow(star, 'Eyes-on'));
         legend.appendChild(head('Ticked birds (tick them in the list)'));
         var dl = mk('div', 'width:40px;height:0;border-top:3px dotted #00f0ff;position:relative');
         dl.appendChild(mk('span', 'position:absolute;left:14px;top:-13px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000', '\\u203A'));
         legend.appendChild(lrow(dl, 'Past signal lines (last five days), dotted, with arrows and how many days ago. Each ticked bird has its own colour.'));
         var star2 = star.cloneNode(true); star2.firstChild.setAttribute('fill', '#00f0ff');
-        legend.appendChild(lrow(star2, 'A confirmed location, in the bird colour, with how many days ago.'));
+        legend.appendChild(lrow(star2, 'A confirmed location, with how many days ago.'));
         legend.appendChild(lrow(mk('div', 'font:bold 11px sans-serif;color:#fff;border:1px solid #fff;border-radius:6px;padding:3px 5px;text-align:center', 'Reset selections'), 'Unticks every bird and returns to today (button on the map).'));
         legend.appendChild(head('Teams'));
         legend.appendChild(lrow(mk('div', 'width:14px;height:14px;border-radius:50%;background:#1e6bff;border:2px solid #fff'), 'Team at a high point.'));
