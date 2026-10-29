@@ -126,7 +126,7 @@ get_password <- function() {                          # NULL means "no usable pa
 STATION_KMZ <- "highpoints.kmz"        # optional alternative
 STATION_CSV <- "highpoints.csv"        # columns: name, lon, lat (one row per high point)
 FADE_DAYS   <- 7                      # signal this old is drawn at its faintest
-MAP_HEIGHT <- "65vh"      # height of the map (percent of the screen height; smaller = shorter map)
+MAP_HEIGHT <- "77vh"      # height of the map (percent of the screen height; smaller = shorter map)
 SAT_OPACITY <- 1     # satellite image strength: 1 = full colour (lower = paler)
 RUNNER_DAYS <- 7                      # no signal for this many days = "runner" (listed at the bottom)
 LINE_KM     <- c(strong = 3, medium = 5, weak = 15)   # drawn line length (km) by signal strength
