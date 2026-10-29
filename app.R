@@ -143,7 +143,8 @@ JITTER_PX  <- 16     # sideways gap (screen pixels) between birds' lines that wo
 JITTER_DEG <- 3      # lines from the same spot within this many degrees count as overlapping
 HIDE_LINES_WHEN_LOCATED <- FALSE  # once a bird has a triangulated point, show just the point (set FALSE to keep its lines too)
 # High-contrast colours, handed out automatically to the birds that are currently being tracked.
-# light, bright colours that stand out on the dark satellite image. No yellow, orange or gold: gold is for found birds.
+# light, bright colours that stand out on the dark satellite image. No gold: gold is for found birds. Colours are given out in this order,
+# so the first ones are the most different from each other; with more birds than colours, the list starts again.
 BIRD_COLS <- c("#ffffff",   # white
               "#ff2a2a",   # red
               "#d4ff00",   # lime yellow-green
@@ -153,7 +154,12 @@ BIRD_COLS <- c("#ffffff",   # white
               "#1fe05a",   # green
               "#b36bff",   # purple
               "#c4c4c4",   # grey
-              "#ffb3a0")   # salmon
+              "#ffb3a0",   # salmon
+              "#ff8a00",   # orange
+              "#7ec8ff",   # sky blue
+              "#e000ff",   # magenta
+              "#8dffb0",   # mint
+              "#d9b88f")   # tan
 TZ          <- "Australia/Sydney"
 Sys.setenv(TZ = TZ)
 M_PER_DEG   <- 111320
