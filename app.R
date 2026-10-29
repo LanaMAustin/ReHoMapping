@@ -144,7 +144,16 @@ JITTER_DEG <- 3      # lines from the same spot within this many degrees count a
 HIDE_LINES_WHEN_LOCATED <- FALSE  # once a bird has a triangulated point, show just the point (set FALSE to keep its lines too)
 # High-contrast colours, handed out automatically to the birds that are currently being tracked.
 # light, bright colours that stand out on the dark satellite image. No yellow, orange or gold: gold is for found birds.
-BIRD_COLS <- c("#ffffff", "#ff5cc8", "#00f0ff", "#7dff3b", "#ff6b6b", "#c8a2ff", "#5b9dff", "#2ee6c0", "#c4c4c4", "#9a7bff")
+BIRD_COLS <- c("#ffffff",   # white
+              "#ff2a2a",   # red
+              "#d4ff00",   # lime yellow-green
+              "#2f80ff",   # blue
+              "#ff5cc8",   # pink
+              "#00f0ff",   # cyan
+              "#1fe05a",   # green
+              "#b36bff",   # purple
+              "#c4c4c4",   # grey
+              "#ffb3a0")   # salmon
 TZ          <- "Australia/Sydney"
 Sys.setenv(TZ = TZ)
 M_PER_DEG   <- 111320
