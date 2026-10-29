@@ -126,6 +126,7 @@ get_password <- function() {                          # NULL means "no usable pa
 STATION_KMZ <- "highpoints.kmz"        # optional alternative
 STATION_CSV <- "highpoints.csv"        # columns: name, lon, lat (one row per high point)
 FADE_DAYS   <- 7                      # signal this old is drawn at its faintest
+MAP_HEIGHT <- "65vh"      # height of the map (percent of the screen height; smaller = shorter map)
 SAT_OPACITY <- 1     # satellite image strength: 1 = full colour (lower = paler)
 RUNNER_DAYS <- 7                      # no signal for this many days = "runner" (listed at the bottom)
 LINE_KM     <- c(strong = 3, medium = 5, weak = 15)   # drawn line length (km) by signal strength
@@ -396,8 +397,8 @@ bird_trail <- function(b, e, stations, n = TRAIL_N) {
 main_ui <- function() fluidPage(
   title = "REHO live tracking",
   tags$style(HTML(".zoomed-out .station-label, .no-names .station-label { display: none; } .found-star, .chev { background: none; border: none; } .leaflet-container { background: #ffffff; } .map-full { position: fixed !important; top: 0; left: 0; width: 100vw !important; height: 100vh !important; height: 100dvh !important; z-index: 10000; } .full-btn { background: #fff; color: #222; font: bold 14px sans-serif; padding: 9px 12px; border: 2px solid rgba(0,0,0,0.35); border-radius: 6px; cursor: pointer; }")),
-  leafletOutput("map", height = "82vh"),
-  h2("REHO live tracking"),
+  h2("REHO live tracking", style = "margin: 10px 0 8px 0;"),
+  leafletOutput("map", height = MAP_HEIGHT),
   if (!LIVE) div(class = "alert alert-warning", "DEMO MODE: example signals only. Set SHEET_ID and GOOGLE_KEY_JSON for real data."),
   div(style = "display: flex; flex-wrap: wrap; align-items: center; column-gap: 22px;",     # all tick boxes on one line
       checkboxInput("asof_on", "View from EOD yesterday", FALSE),
