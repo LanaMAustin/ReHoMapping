@@ -56,33 +56,39 @@ get_signals <- function() {
   d <- cached("signals", function() read_tab("Signals"))
   if (is.null(d)) list(d = NULL, note = "Can't read the signal sheet right now.") else list(d = d, note = NULL)
 }
-get_teams <- function() {                            # optional "Teams" tab: time, team, lat, lon
+get_teams <- function() {                            # optional "Teams" tab: date, team, highpoint, lat, lon, active
   if (!LIVE) return(if (file.exists("teams.csv")) read.csv("teams.csv", stringsAsFactors = FALSE, colClasses = "character") else NULL)
   cached("teams", function() read_tab("Teams"))
 }
-read_teams <- function(stations) {                  # one row per team: team + (lat, lon or a high point name)
+read_teams <- function(stations) {                  # every Teams row is kept as history; each team's newest row is the one on the map
   d <- get_teams()
   if (is.null(d) || !nrow(d)) return(NULL)
   names(d) <- tidy_names(names(d))
   if (!"team" %in% names(d)) return(NULL)
   if (!"highpoint" %in% names(d)) d$highpoint <- if ("station" %in% names(d)) d$station else NA_character_
   for (n in c("lat", "lon")) if (!n %in% names(d)) d[[n]] <- NA_character_
+  if (!"date" %in% names(d)) d$date <- NA_character_
+  if (!"active" %in% names(d)) d$active <- NA_character_
   num <- function(x) suppressWarnings(as.numeric(trimws(as.character(x))))
   clean <- function(x) { x <- trimws(as.character(x)); x[is.na(x)] <- ""; x }
   norm <- function(x) gsub("[^a-z0-9]", "", tolower(x))
   t <- data.frame(row = seq_len(nrow(d)) + 1, team = clean(d$team), hp = clean(d$highpoint),
-                  lat = num(d$lat), lon = num(d$lon), stringsAsFactors = FALSE)
-  t <- t[nzchar(t$team) | nzchar(t$hp) | !is.na(t$lat) | !is.na(t$lon), , drop = FALSE]
+                  lat = num(d$lat), lon = num(d$lon), time = parse_time(d$date),
+                  off = tolower(clean(d$active)) %in% c("no", "n"), stringsAsFactors = FALSE)
+  t <- t[nzchar(t$team), , drop = FALSE]                 # rows without a team name are ignored
+  if (!nrow(t)) return(NULL)
+  t$tkey <- ifelse(is.na(t$time), -Inf, as.numeric(t$time))   # rows with no date count as oldest; sheet order breaks ties
+  t <- t[order(t$tkey, t$row), , drop = FALSE]
+  t <- t[!duplicated(tolower(t$team), fromLast = TRUE), , drop = FALSE]   # newest row per team
+  t <- t[!t$off, , drop = FALSE]                         # active = no takes the team off the map
   if (!nrow(t)) return(NULL)
   idx <- match(norm(t$hp), norm(stations$name))
   use_ll <- !is.na(t$lat) & !is.na(t$lon) & abs(t$lat) <= 90 & abs(t$lon) <= 180   # lat/lon wins if both are filled
   use_hp <- !use_ll & !is.na(idx)
   t$lat[use_hp] <- stations$lat[idx[use_hp]]; t$lon[use_hp] <- stations$lon[idx[use_hp]]
   t$area <- use_ll                                       # lat/lon = a general area (circle); high point = a dot
-  ok <- nzchar(t$team) & (use_ll | use_hp)
-  good <- t[ok, , drop = FALSE]
-  good <- good[!duplicated(tolower(good$team), fromLast = TRUE), ]
-  list(df = good[, c("team", "lat", "lon", "area")], ignored = t$row[!ok])
+  ok <- use_ll | use_hp
+  list(df = t[ok, c("team", "lat", "lon", "area"), drop = FALSE], ignored = t$row[!ok])
 }
 get_others <- function() {                           # optional "non-tx birds" tab: date, lat, lon, bands
   if (!LIVE) return(if (file.exists("others.csv")) read.csv("others.csv", stringsAsFactors = FALSE, colClasses = "character") else NULL)
