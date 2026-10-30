@@ -107,6 +107,32 @@ read_others <- function() {                          # untracked birds: one row 
   list(df = o[ok, c("time", "lat", "lon", "bands"), drop = FALSE], note = NULL,
        ignored_why = paste0(o$row[!ok], " (", why[!ok], ")"), n = sum(ok))
 }
+get_reports <- function() {                          # optional "public reports" tab: date, lat, lon, checked (yes/no)
+  if (!LIVE) return(if (file.exists("reports.csv")) read.csv("reports.csv", stringsAsFactors = FALSE, colClasses = "character") else NULL)
+  cached("reports", function() read_tab("public reports"))
+}
+read_reports <- function() {                         # public sightings of birds: one row per report
+  d <- get_reports()
+  if (is.null(d)) return(list(df = NULL, note = "Public reports: can't read the tab (is it named exactly 'public reports'?)."))
+  if (!nrow(d)) return(list(df = NULL, note = NULL))
+  names(d) <- tidy_names(names(d))
+  if (!all(c("date", "lat", "lon") %in% names(d)))
+    return(list(df = NULL, note = paste0("Public reports: row 1 needs the headings date, lat, lon and checked, plus an optional notes column (found: ", paste(names(d), collapse = ", "), ").")))
+  if (!"checked" %in% names(d)) d$checked <- ""
+  if (!"notes" %in% names(d)) d$notes <- ""
+  num <- function(x) suppressWarnings(as.numeric(trimws(as.character(x))))
+  chk <- tolower(trimws(ifelse(is.na(d$checked), "", as.character(d$checked))))
+  r <- data.frame(row = seq_len(nrow(d)) + 1, raw = trimws(as.character(d$date)), time = parse_time(d$date),
+                  lat = num(d$lat), lon = num(d$lon), chk = chk,
+                  notes = trimws(ifelse(is.na(d$notes), "", as.character(d$notes))), stringsAsFactors = FALSE)
+  r <- r[!(is.na(r$raw) | r$raw == "") | !is.na(r$lat) | !is.na(r$lon), , drop = FALSE]      # skip fully blank rows
+  chk_ok <- r$chk %in% c("", "yes", "no", "y", "n")                                          # blank counts as not checked
+  ok <- !is.na(r$time) & !is.na(r$lat) & !is.na(r$lon) & abs(r$lat) <= 90 & abs(r$lon) <= 180 & chk_ok
+  why <- ifelse(is.na(r$time), paste0("date '", r$raw, "' unreadable"), ifelse(!chk_ok, "checked must be yes or no", "lat/lon"))
+  r$checked <- r$chk %in% c("yes", "y")
+  list(df = r[ok, c("time", "lat", "lon", "checked", "notes"), drop = FALSE], note = NULL,
+       ignored_why = paste0(r$row[!ok], " (", why[!ok], ")"), n = sum(ok))
+}
 # "Stay signed in": after a correct password the phone keeps a code that is good until 4am the next morning (Sydney).
 # The code can't be made without the password and the Google key, and it stops working if the password is changed.
 make_token <- function(pw) {
@@ -420,7 +446,7 @@ main_ui <- function() fluidPage(
   div(style = "display: flex; flex-wrap: wrap; align-items: center; column-gap: 22px;",     # all tick boxes on one line
       checkboxInput("asof_on", "View from EOD yesterday", FALSE),
       checkboxInput("show_others", "Non-tx birds", FALSE),
-      checkboxInput("show_labels", "Show high point names", TRUE)),
+      checkboxInput("show_reports", "Public reports", FALSE)),
   h5("Birds (tick one or more birds to see their last five days; untick to clear)"),
   DTOutput("tbl"),
   div(style = "margin: 14px 0 24px 0; color: #666; font-size: 13px;", textOutput("status_note"))     # rows read / sheet read time
@@ -472,7 +498,6 @@ server <- function(input, output, session) {
   session$onSessionEnded(function() { if (counted) { counted <<- FALSE; isolate(viewers(max(0, viewers() - 1))) } })
   output$viewers_now <- renderText(paste0("Viewers now: ", viewers()))
   output$page <- renderUI(if (authed()) main_ui() else gate_ui(gate_msg()))
-  observeEvent(input$show_labels, session$sendCustomMessage("hp_labels", isTRUE(input$show_labels)))
   observeEvent(input$saved_token, {                    # a phone that signed in earlier today comes back without the password
     tk <- input$saved_token
     if (isTRUE(authed()) || !is.character(tk) || !nzchar(tk)) return()
@@ -527,6 +552,14 @@ server <- function(input, output, session) {
     else if (!is.null(ob$n)) {
       msg <- paste0(msg, " Non-tx rows read: ", ob$n, ".")
       if (length(ob$ignored_why)) msg <- paste0(msg, " Ignored non-tx rows: ", paste(head(ob$ignored_why, 6), collapse = "; "))
+    }
+    if (isTRUE(input$show_reports)) {
+      rb <- read_reports()
+      if (!is.null(rb$note)) msg <- paste0(msg, " ", rb$note)
+      else if (!is.null(rb$n)) {
+        msg <- paste0(msg, " Public report rows read: ", rb$n, ".")
+        if (length(rb$ignored_why)) msg <- paste0(msg, " Ignored report rows: ", paste(head(rb$ignored_why, 6), collapse = "; "))
+      }
     }
     tg <- teams()
     if (!is.null(tg) && length(tg$ignored)) msg <- paste0(msg, " Ignored Teams rows (need a team name plus lat/lon or a high point): ",
@@ -617,6 +650,17 @@ server <- function(input, output, session) {
           });
         }
         map.on('zoomend', draw);
+        // public reports: a question mark, bright white = not checked yet, faded grey = checked
+        var reps = L.layerGroup().addTo(map);
+        Shiny.addCustomMessageHandler('reports', function(m) {
+          reps.clearLayers();
+          (Array.isArray(m) ? m : []).forEach(function(o) {
+            var sh = '0 0 3px #000, 0 0 3px #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000';
+            var html = '<div style=\"text-align:center;font:bold 26px/26px sans-serif;color:' + (o.checked ? '#a8a8a8' : '#fff') + ';text-shadow:' + sh + ';opacity:' + (o.checked ? '0.8' : '1') + '\">?</div>';
+            L.marker([o.lat, o.lon], {icon: L.divIcon({className: 'chev', html: html, iconSize: [26, 26], iconAnchor: [13, 13]})})
+              .bindPopup(o.popup).addTo(reps);
+          });
+        });
         // untracked birds: a white diamond (date label under it); tap for the details
         var others = L.layerGroup().addTo(map);
         Shiny.addCustomMessageHandler('others', function(m) {
@@ -725,22 +769,22 @@ server <- function(input, output, session) {
           });
         })();
         // full-screen button on the map (CSS based, so it also works on iPhones)
-        // legend panel (opened with the Legend button)
+        // legend panel, shown under the map
         var legend = document.createElement('div');
-        legend.style.cssText = 'display:none;position:absolute;bottom:214px;left:10px;z-index:1000;max-width:270px;max-height:calc(100% - 234px);overflow:auto;' +
-          'background:rgba(20,20,20,0.9);color:#fff;border-radius:8px;padding:10px 12px;font:13px/1.3 sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.5)';
-        L.DomEvent.disableClickPropagation(legend); L.DomEvent.disableScrollPropagation(legend);
+        legend.id = 'reho-legend';
+        legend.style.cssText = 'display:block;position:static;margin:6px 0 4px 0;background:#f4f4f4;color:#222;border:1px solid #d0d0d0;border-radius:8px;padding:2px 12px 6px 12px;font:12px/1.3 sans-serif;column-width:190px;column-gap:22px;';
+        var oldLegend = document.getElementById('reho-legend'); if (oldLegend) oldLegend.remove();
         function mk(tag, css, text) { var e = document.createElement(tag); if (css) e.style.cssText = css; if (text) e.textContent = text; return e; }
         function lrow(sample, text) {
-          var r = mk('div', 'display:flex;align-items:center;gap:10px;margin:7px 0');
-          var sb = mk('div', 'width:56px;flex:none;display:flex;justify-content:center;align-items:center'); sb.appendChild(sample);
+          var r = mk('div', 'display:flex;align-items:center;gap:8px;margin:4px 0;break-inside:avoid');
+          var sb = mk('div', 'width:46px;flex:none;display:flex;justify-content:center;align-items:center'); sb.appendChild(sample);
           r.appendChild(sb); r.appendChild(mk('div', 'flex:1', text)); return r;
         }
-        function head(t) { return mk('div', 'font-weight:bold;margin:10px 0 2px;color:#fff', t); }
+        function head(t) { return mk('div', 'font-weight:bold;margin:8px 0 1px;color:#222;break-after:avoid', t); }
         legend.appendChild(head('Tracked birds'));
         var sLine = mk('div', 'width:38px;height:3px;background:#ff5cc8;border-radius:2px;box-shadow:0 0 0 1.5px rgba(0,0,0,0.6);position:relative');
-        sLine.appendChild(mk('span', 'position:absolute;left:11px;top:-11px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000', '\\u203A'));
-        sLine.appendChild(mk('span', 'position:absolute;left:25px;top:-11px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000', '\\u203A'));
+        sLine.appendChild(mk('span', 'position:absolute;left:11px;top:-11px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000,0 0 2px #000', '\\u203A'));
+        sLine.appendChild(mk('span', 'position:absolute;left:25px;top:-11px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000,0 0 2px #000', '\\u203A'));
         legend.appendChild(lrow(sLine, 'Signal line'));
         var ns = 'http://www.w3.org/2000/svg', star = document.createElementNS(ns, 'svg');
         star.setAttribute('width', '22'); star.setAttribute('height', '22'); star.setAttribute('viewBox', '0 0 32 32');
@@ -751,7 +795,7 @@ server <- function(input, output, session) {
         legend.appendChild(lrow(star, 'Eyes-on'));
         legend.appendChild(head('Ticked birds from list'));
         var dl = mk('div', 'width:40px;height:0;border-top:3px dotted #00f0ff;position:relative');
-        dl.appendChild(mk('span', 'position:absolute;left:14px;top:-13px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000', '\\u203A'));
+        dl.appendChild(mk('span', 'position:absolute;left:14px;top:-13px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000,0 0 2px #000', '\\u203A'));
         legend.appendChild(lrow(dl, 'Most recent five days'));
         var star2 = star.cloneNode(true); star2.firstChild.setAttribute('fill', '#00f0ff');
         legend.appendChild(lrow(star2, 'Confirmed location'));
@@ -759,11 +803,13 @@ server <- function(input, output, session) {
         legend.appendChild(lrow(mk('div', 'width:14px;height:14px;border-radius:50%;background:#1e6bff;border:2px solid #fff'), 'At high point'));
         legend.appendChild(lrow(mk('div', 'width:26px;height:26px;border-radius:50%;background:rgba(30,107,255,0.28);border:2px dashed #fff'), 'General location'));
         legend.appendChild(head('Other'));
-        legend.appendChild(lrow(mk('div', 'width:10px;height:10px;border-radius:50%;background:#000;border:2px solid #fff'), 'High point (tick names on/off)'));
+        legend.appendChild(lrow(mk('div', 'width:10px;height:10px;border-radius:50%;background:#000;border:2px solid #fff'), 'High point'));
         legend.appendChild(lrow(mk('div', 'width:11px;height:11px;background:#fff;border:2px solid #000;transform:rotate(45deg)'), 'Non-tx bird (tap for date and colours)'));
-        legend.appendChild(lrow(mk('div', 'font:bold 11px sans-serif;color:#fff;border:1px solid #fff;border-radius:6px;padding:3px 5px;text-align:center', 'Reset'), 'Reset button'));
+        legend.appendChild(lrow(mk('div', 'font:bold 22px/22px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000,0 0 2px #000', '?'), 'Public report, not checked'));
+        legend.appendChild(lrow(mk('div', 'font:bold 22px/22px sans-serif;color:#a8a8a8;opacity:0.8;text-shadow:0 0 3px #000,0 0 3px #000,0 0 2px #000', '?'), 'Public report, checked'));
         legend.appendChild(mk('div', 'margin:8px 0 2px', 'Press and hold for Google Maps directions'));
-        el.appendChild(legend);
+        el.parentNode.insertBefore(legend, el.nextSibling);          // the legend sits just under the map
+
         function fitSightings() {                                       // whatever is showing now (or the ticked bird's trail)
           var pts = [];
           if (sel.length) pts = trailLL(sel);
@@ -775,12 +821,15 @@ server <- function(input, output, session) {
         }
         var Full = L.Control.extend({ options: { position: 'bottomleft' }, onAdd: function() {
           var wrap = L.DomUtil.create('div', ''); wrap.style.display = 'flex'; wrap.style.flexDirection = 'column'; wrap.style.marginBottom = '62px'; wrap.style.alignItems = 'flex-start'; wrap.style.gap = '6px';
-          var lg = L.DomUtil.create('div', 'full-btn', wrap); lg.innerHTML = 'Legend';
           var b = L.DomUtil.create('div', 'full-btn', wrap); b.innerHTML = 'Full screen';
           var f = L.DomUtil.create('div', 'full-btn', wrap); f.innerHTML = 'Fit sightings';
+          var lb = L.DomUtil.create('div', 'full-btn', wrap); lb.innerHTML = 'Labels';
+          L.DomEvent.on(lb, 'click', function() {                          // high point names on or off
+            var off = el.classList.toggle('no-names');
+            lb.style.opacity = off ? '0.6' : ''; lb.style.textDecoration = off ? 'line-through' : '';
+          });
           var rs = L.DomUtil.create('div', 'full-btn', wrap); rs.innerHTML = 'Reset'; resetBtn = rs;
           L.DomEvent.on(rs, 'click', function() { window.rehoSelect([]); fitSightings(); });
-          L.DomEvent.on(lg, 'click', function() { legend.style.display = legend.style.display === 'none' ? 'block' : 'none'; });
           L.DomEvent.disableClickPropagation(wrap);
           L.DomEvent.on(f, 'click', fitSightings);
           function set(on) {
@@ -793,6 +842,49 @@ server <- function(input, output, session) {
           document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && el.classList.contains('map-full')) set(false); });
           return wrap;
         } });
+        // coordinate search: type or paste latitude and longitude, press Go, and a pin is dropped there
+        var pinLayer = L.layerGroup().addTo(map);
+        function parseCoords(t) {
+          var nums = String(t).match(/-?\\d+(?:\\.\\d+)?/g);
+          if (!nums || nums.length < 2) return null;
+          var la = parseFloat(nums[0]), lo = parseFloat(nums[1]);
+          if (/\\d\\W*S\\b/i.test(String(t)) && la > 0) la = -la;          // 32.88 S means south
+          if (/\\d\\W*W\\b/i.test(String(t)) && lo > 0) lo = -lo;          // and W means west
+          if (Math.abs(la) > 90 && Math.abs(lo) <= 90) { var tmp = la; la = lo; lo = tmp; }
+          if (Math.abs(la) > 90 || Math.abs(lo) > 180) return null;
+          return [la, lo];
+        }
+        function dropPin(la, lo) {
+          pinLayer.clearLayers();
+          var svg = '<svg width=\"26\" height=\"36\" viewBox=\"0 0 26 36\" style=\"display:block\"><path d=\"M13 34 C13 34 2 21 2 13 A11 11 0 0 1 24 13 C24 21 13 34 13 34 Z\" fill=\"#e53935\" stroke=\"#fff\" stroke-width=\"2.5\"/><circle cx=\"13\" cy=\"13\" r=\"4.5\" fill=\"#fff\"/></svg>';
+          var m = L.marker([la, lo], {icon: L.divIcon({className: 'chev', html: svg, iconSize: [26, 36], iconAnchor: [13, 34], popupAnchor: [0, -32]}), zIndexOffset: 2000});
+          var box = document.createElement('div');
+          box.appendChild(mk('div', 'font-weight:bold', la.toFixed(5) + ', ' + lo.toFixed(5)));
+          var dir = mk('a', 'display:block;margin-top:6px', 'Directions in Google Maps');
+          dir.href = 'https://www.google.com/maps/dir/?api=1&destination=' + la + ',' + lo + '&travelmode=driving'; dir.target = '_blank'; dir.rel = 'noopener';
+          box.appendChild(dir);
+          var rm = mk('a', 'display:block;margin-top:6px;cursor:pointer;color:#c62828', 'Remove pin');
+          rm.onclick = function() { pinLayer.clearLayers(); };
+          box.appendChild(rm);
+          m.bindPopup(box).addTo(pinLayer);
+          map.setView([la, lo], Math.max(map.getZoom(), 15));
+          m.openPopup();
+        }
+        var sb = mk('div', 'position:absolute;top:10px;left:58px;z-index:1000;display:flex;gap:4px;align-items:center;max-width:calc(100% - 140px)');
+        var inp = document.createElement('input');
+        inp.type = 'text'; inp.placeholder = 'lat, lon'; inp.setAttribute('autocomplete', 'off'); inp.setAttribute('autocapitalize', 'off'); inp.setAttribute('autocorrect', 'off'); inp.setAttribute('inputmode', 'text');
+        inp.style.cssText = 'flex:1;min-width:0;width:170px;height:34px;box-sizing:border-box;font:16px sans-serif;padding:0 8px;border:2px solid rgba(0,0,0,0.35);border-radius:6px;background:#fff;color:#222';
+        var go = mk('div', 'height:34px;line-height:30px;box-sizing:border-box;padding:0 10px;font:bold 13px/30px sans-serif;background:#fff;color:#222;border:2px solid rgba(0,0,0,0.35);border-radius:6px;cursor:pointer;flex:none', 'Go');
+        function runSearch() {
+          var c = parseCoords(inp.value);
+          if (!c) { toast('Type latitude and longitude, like -32.8887, 151.5346'); return; }
+          dropPin(c[0], c[1]); inp.blur();
+        }
+        L.DomEvent.on(go, 'click', runSearch);
+        L.DomEvent.on(inp, 'keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); runSearch(); } });
+        sb.appendChild(inp); sb.appendChild(go);
+        L.DomEvent.disableClickPropagation(sb); L.DomEvent.disableScrollPropagation(sb);
+        el.appendChild(sb);
         map.addControl(new Full());
         Shiny.addCustomMessageHandler('chevrons', function(m) { chev = Array.isArray(m) ? m : []; draw(); });
         Shiny.addCustomMessageHandler('founds', function(m) { founds = Array.isArray(m) ? m : []; draw(); });
@@ -875,6 +967,23 @@ server <- function(input, output, session) {
                                          if (nzchar(o$bands[i])) htmltools::htmlEscape(o$bands[i]) else "not recorded", o$lat[i], o$lon[i]))
     }
     session$sendCustomMessage("others", unname(out))
+  })
+
+  observe({                                              # public reports: the last 7 days, when the tick box is on
+    req(authed(), map_ready())
+    tick(); asof <- asof_time()
+    r <- if (isTRUE(input$show_reports)) read_reports()$df else NULL
+    out <- list()
+    if (!is.null(r) && nrow(r)) {
+      from <- as.POSIXct(paste(as.Date(asof, tz = TZ) - 7, "00:00:00"), tz = TZ)
+      r <- r[r$time >= from & r$time <= asof, , drop = FALSE]
+      for (i in seq_len(nrow(r)))
+        out[[i]] <- list(lat = r$lat[i], lon = r$lon[i], checked = r$checked[i],
+                         popup = sprintf("<b>Public report</b><br>%s<br>Checked: %s%s<br>%.5f, %.5f", format(r$time[i], "%a %d %b %Y"),
+                                         if (r$checked[i]) "yes" else "no",
+                                         if (nzchar(r$notes[i])) paste0("<br>Notes: ", htmltools::htmlEscape(r$notes[i])) else "", r$lat[i], r$lon[i]))
+    }
+    session$sendCustomMessage("reports", unname(out))
   })
 
   tbl <- reactive({                                      # one row per bird, in bird-number order
