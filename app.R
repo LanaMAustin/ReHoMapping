@@ -162,7 +162,10 @@ MAP_HEIGHT <- "77vh"      # height of the map (percent of the screen height; sma
 SAT_OPACITY <- 1     # satellite image strength: 1 = full colour (lower = paler)
 RUNNER_DAYS <- 7                      # no signal for this many days = "runner" (listed at the bottom)
 LINE_KM     <- c(strong = 3, medium = 5, weak = 15)   # drawn line length (km) by signal strength
-MAX_KM      <- 15                                      # nothing is drawn longer than this
+MAX_KM      <- 15                                      # a line with no crossing is never drawn longer than this
+CONE_DEG    <- 10                                      # each bearing is treated as a cone this many degrees either side
+MIN_CONE_SIGNALS <- 3                                  # this many signals (same day) turn a bird's lines into one general area
+CROSS_KM    <- 50                                      # a line runs on to its last crossing with another of the bird's lines, up to this far
 line_km <- function(strength) {                        # no strength given = weak = 15 km
   k <- LINE_KM[tolower(trimws(as.character(strength)))]
   k[is.na(k)] <- LINE_KM[["weak"]]
@@ -222,9 +225,48 @@ line_lengths <- function(L) {
     w <- P[j, ] - P[i, ]
     a <- x(w, D[j, ]) / cr                              # metres along line i
     b <- x(w, D[i, ]) / cr                              # metres along line j
-    if (a > 0 && b > 0 && a / 1000 <= MAX_KM) best[i] <- max(best[i], a / 1000)
+    if (a > 0 && b > 0 && a / 1000 <= CROSS_KM) best[i] <- max(best[i], a / 1000)
   }
   ifelse(is.finite(best), best, len)
+}
+
+# General area for a bird: the patch where the cones of ALL its signals overlap (each bearing +/- CONE_DEG).
+# Returns a matrix of lon/lat corners, or NULL when there are too few signals or the cones don't all overlap.
+cone_area <- function(L, half = CONE_DEG) {
+  if (is.null(L) || nrow(L) < MIN_CONE_SIGNALS) return(NULL)
+  n <- nrow(L)
+  len <- line_lengths(L) * 1.3                            # a little past the line tips, so the area isn't cut off at them
+  lon0 <- mean(L$lon); lat0 <- mean(L$lat)
+  P <- to_xy(L$lon, L$lat, lon0, lat0)
+  area2 <- function(m) { k <- nrow(m); j <- c(2:k, 1); sum(m[, 1] * m[j, 2] - m[j, 1] * m[, 2]) / 2 }
+  wedge <- function(i) {
+    th <- L$bearing[i] * pi / 180; al <- half * pi / 180; R <- len[i] * 1000 / cos(al)
+    m <- rbind(P[i, ], P[i, ] + R * c(sin(th - al), cos(th - al)), P[i, ] + R * c(sin(th + al), cos(th + al)))
+    if (area2(m) < 0) m <- m[3:1, , drop = FALSE]         # corners anticlockwise
+    m
+  }
+  clip <- function(subj, cl) {                            # Sutherland-Hodgman: keep the part of subj inside the convex shape cl
+    out <- subj; m <- nrow(cl)
+    for (i in seq_len(m)) {
+      if (nrow(out) < 3) return(out[0, , drop = FALSE])
+      a <- cl[i, ]; b <- cl[if (i == m) 1 else i + 1, ]
+      side <- function(p) (b[1] - a[1]) * (p[2] - a[2]) - (b[2] - a[2]) * (p[1] - a[1])
+      cross_pt <- function(p, q) { d <- q - p; e <- b - a; t <- ((a[1] - p[1]) * e[2] - (a[2] - p[2]) * e[1]) / (d[1] * e[2] - d[2] * e[1]); p + t * d }
+      inp <- out; out <- matrix(numeric(0), 0, 2); k <- nrow(inp)
+      for (j in seq_len(k)) {
+        cur <- inp[j, ]; prv <- inp[if (j == 1) k else j - 1, ]
+        if (side(cur) >= 0) { if (side(prv) < 0) out <- rbind(out, cross_pt(prv, cur)); out <- rbind(out, cur) }
+        else if (side(prv) >= 0) out <- rbind(out, cross_pt(prv, cur))
+      }
+    }
+    out
+  }
+  poly <- wedge(1)
+  for (i in 2:n) { poly <- clip(poly, wedge(i)); if (nrow(poly) < 3) return(NULL) }
+  if (abs(area2(poly)) < 500) return(NULL)                # under 500 square metres: effectively no overlap
+  res <- from_xy(poly[, 1], poly[, 2], lon0, lat0)
+  attr(res, "km2") <- abs(area2(poly)) / 1e6
+  res
 }
 # Least-squares crossing of bearing lines (exact for two). NULL if near-parallel or behind a station.
 triangulate <- function(lon, lat, brg) {
@@ -271,14 +313,14 @@ load_stations <- function() {
         xy <- sf::st_coordinates(sf::st_zm(x))
         data.frame(name = as.character(x$Name), lon = xy[, 1], lat = xy[, 2], stringsAsFactors = FALSE)
       }))
-      if (is.null(pts) || !nrow(pts)) NULL else list(df = pts, source = "highpoints.kmz")
+      if (is.null(pts) || !nrow(pts)) NULL else list(df = pts, source = normalizePath(STATION_KMZ, winslash = "/"))
     }, error = function(e) NULL)
     if (!is.null(out)) return(out)
   }
   if (file.exists(STATION_CSV)) {
     out <- tryCatch({
       d <- read.csv(STATION_CSV, stringsAsFactors = FALSE)
-      list(df = d[, c("name", "lon", "lat")], source = "highpoints.csv")
+      list(df = d[, c("name", "lon", "lat")], source = normalizePath(STATION_CSV, winslash = "/"))
     }, error = function(e) NULL)
     if (!is.null(out)) return(out)
   }
@@ -495,6 +537,7 @@ server <- function(input, output, session) {
   # ---- password gate: the sheet is only read, and nothing is sent to the browser, after a correct password
   authed <- reactiveVal(FALSE); typed <- reactiveVal(NULL); fails <- reactiveVal(0); gate_msg <- reactiveVal(NULL)
   map_ready <- reactiveVal(FALSE)
+  area_text <- reactiveVal("")                          # for the grey status line: which birds have a general area
   counted <- FALSE                                       # is this phone counted in the viewers total?
   observe({
     a <- authed()
@@ -550,7 +593,7 @@ server <- function(input, output, session) {
     if (!is.null(s$note)) return(s$note)
     last <- cache$signals$t
     when <- if (is.null(last)) "" else paste0(" Sheet read at ", format(as.POSIXct(last, origin = "1970-01-01", tz = TZ), "%H:%M:%S"), ".")
-    msg <- paste0("Stations: ", nrow(stations), ". Rows read: ", nrow(s$df), ".", when)
+    msg <- paste0("Stations: ", nrow(stations), " (from ", st_info$source, "). Rows read: ", nrow(s$df), ".", when)
     if (length(s$ignored)) msg <- paste0(msg, " Ignored sheet rows (check station spelling/blank cells): ",
                                          paste(head(s$ignored_why, 6), collapse = "; "))
     ob <- read_others()
@@ -559,6 +602,8 @@ server <- function(input, output, session) {
       msg <- paste0(msg, " Non-tx rows read: ", ob$n, ".")
       if (length(ob$ignored_why)) msg <- paste0(msg, " Ignored non-tx rows: ", paste(head(ob$ignored_why, 6), collapse = "; "))
     }
+    if (nzchar(area_text())) msg <- paste0(msg, " General areas: ", area_text(), ".")
+    if (!is.null(input$area_err)) msg <- paste0(msg, " Area drawing error: ", input$area_err)
     if (isTRUE(input$show_reports)) {
       rb <- read_reports()
       if (!is.null(rb$note)) msg <- paste0(msg, " ", rb$note)
@@ -591,10 +636,10 @@ server <- function(input, output, session) {
         map.on('zoomend', f); f();
         // bearing lines, direction chevrons, bird numbers and found stars are drawn here, in screen pixels, so that lines which
         // would overlap can be shifted sideways at any zoom. Ticking a bird in the list only shows or hides things here, so it is instant.
-        var chev = [], founds = [], trails = {}, sel = [], layer = L.layerGroup().addTo(map), GAP = 42, JITTER = 16, JDEG = 3;
+        var chev = [], founds = [], areas = [], showAreas = true, trails = {}, sel = [], layer = L.layerGroup().addTo(map), GAP = 42, JITTER = 16, JDEG = 3;
         window.rehoSel = [];
         var shadow = '0 0 3px #000, 0 0 3px #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000';
-        function visible(arr) { return !sel.length ? arr.filter(function(c) { return c.vis; }) : []; }       // a ticked bird is drawn by renderTrail instead
+        function visible(arr) { return !sel.length ? arr.filter(function(c) { return c.vis && !(c.inarea && showAreas); }) : []; }   // lines of a bird that has a general area are hidden       // a ticked bird is drawn by renderTrail instead
         function jitter(items) {            // lines from the same spot at (nearly) the same bearing are fanned out sideways
           items.forEach(function(c) { c.off = 0; });
           var byKey = {};
@@ -620,6 +665,23 @@ server <- function(input, output, session) {
             (c.tag ? '<div style=\"font-size:11px;line-height:12px\">' + c.tag + '</div>' : '') + '</div></div>';
           L.marker([c.lat, c.lon], {icon: L.divIcon({className: 'chev', html: html, iconSize: [22, 22], iconAnchor: [11, 11]}), opacity: c.op})
             .bindPopup(c.popup).addTo(lyr);
+        }
+        function areasShown() {                                         // no bird ticked: today's areas; birds ticked: theirs
+          if (!showAreas) return [];
+          return areas.filter(function(c) { return sel.length ? sel.indexOf(c.bird) >= 0 : c.vis; });
+        }
+        function drawAreas() {
+          areasShown().forEach(function(c) {
+            L.polygon(c.pts, {color: '#000', weight: 5, opacity: 0.4 * c.op, fill: false, interactive: false}).addTo(layer);
+            L.polygon(c.pts, {color: c.col, weight: 2.5, opacity: c.op, dashArray: '7,5', fillColor: c.col, fillOpacity: 0.3 * c.op})
+              .bindTooltip(c.label, {sticky: true}).addTo(layer);
+            var sx = 0, sy = 0; c.pts.forEach(function(p) { sx += p[0]; sy += p[1]; });
+            var ctr = [sx / c.pts.length, sy / c.pts.length];
+            L.marker(ctr, {icon: L.divIcon({className: 'chev', iconSize: [90, 34], iconAnchor: [45, c.tag ? 17 : 10],
+              html: '<div style=\"text-align:center;font:bold 16px/18px sans-serif;color:' + c.col + ';text-shadow:' + shadow + '\">' + c.bird +
+                    (c.tag ? '<div style=\"font-size:11px;line-height:12px;white-space:nowrap\">' + c.tag + '</div>' : '') + '</div>'}),
+              interactive: false, keyboard: false, opacity: c.op}).addTo(layer);
+          });
         }
         function draw() {
           layer.clearLayers();
@@ -651,6 +713,7 @@ server <- function(input, output, session) {
                     (c.tag ? '<div style=\"font-size:11px;line-height:12px;white-space:nowrap\">' + c.tag + '</div>' : '') + '</div>'}),
               interactive: false, keyboard: false, opacity: c.op}).addTo(layer);
           });
+          try { drawAreas(); } catch (err) { toast('Area drawing problem: ' + err.message); Shiny.setInputValue('area_err', err.message + ' / first area: ' + JSON.stringify(areas[0]).slice(0, 300), {priority: 'event'}); }
           visible(founds).forEach(function(c) {                           // found birds: a gold star with the bird number above it
             addStar(c, layer);
           });
@@ -691,6 +754,7 @@ server <- function(input, output, session) {
             h.lines.forEach(function(c) { pts.push([c.lat, c.lon]); pts.push([c.elat, c.elon]); });
             h.stars.forEach(function(c) { pts.push([c.lat, c.lon]); });
           });
+          areas.forEach(function(c) { if (birds.indexOf(c.bird) >= 0) c.pts.forEach(function(p) { pts.push(p); }); });
           return pts;
         }
         function renderTrail() {
@@ -799,6 +863,7 @@ server <- function(input, output, session) {
         poly.setAttribute('fill', '#FFC400'); poly.setAttribute('stroke', '#111'); poly.setAttribute('stroke-width', '2'); poly.setAttribute('stroke-linejoin', 'round');
         star.appendChild(poly);
         legend.appendChild(lrow(star, 'Eyes-on'));
+        legend.appendChild(lrow(mk('div', 'width:34px;height:18px;border:2px dashed #ff5cc8;background:rgba(255,92,200,0.3);border-radius:6px'), 'General area (3+ signals)'));
         legend.appendChild(head('Ticked birds from list'));
         var dl = mk('div', 'width:40px;height:0;border-top:3px dotted #00f0ff;position:relative');
         dl.appendChild(mk('span', 'position:absolute;left:14px;top:-13px;font:bold 16px sans-serif;color:#fff;text-shadow:0 0 3px #000,0 0 3px #000,0 0 2px #000', '\\u203A'));
@@ -823,6 +888,7 @@ server <- function(input, output, session) {
             visible(chev).forEach(function(c) { pts.push([c.lat, c.lon]); pts.push([c.elat, c.elon]); });
             visible(founds).forEach(function(c) { pts.push([c.lat, c.lon]); });
           }
+          areasShown().forEach(function(c) { c.pts.forEach(function(p) { pts.push(p); }); });
           if (pts.length) map.fitBounds(L.latLngBounds(pts), {padding: [40, 40], maxZoom: 15});
         }
         var Full = L.Control.extend({ options: { position: 'bottomleft' }, onAdd: function() {
@@ -833,6 +899,12 @@ server <- function(input, output, session) {
           L.DomEvent.on(lb, 'click', function() {                          // high point names on or off
             var off = el.classList.toggle('no-names');
             lb.style.opacity = off ? '0.6' : ''; lb.style.textDecoration = off ? 'line-through' : '';
+          });
+          var ab = L.DomUtil.create('div', 'full-btn', wrap); ab.innerHTML = 'Triangulation';
+          L.DomEvent.on(ab, 'click', function() {                          // general areas on (lines hidden) or off (lines shown)
+            showAreas = !showAreas;
+            ab.style.opacity = showAreas ? '' : '0.6'; ab.style.textDecoration = showAreas ? '' : 'line-through';
+            draw();
           });
           var rs = L.DomUtil.create('div', 'full-btn', wrap); rs.innerHTML = 'Reset'; resetBtn = rs;
           L.DomEvent.on(rs, 'click', function() { window.rehoSelect([]); fitSightings(); });
@@ -894,6 +966,7 @@ server <- function(input, output, session) {
         map.addControl(new Full());
         Shiny.addCustomMessageHandler('chevrons', function(m) { chev = Array.isArray(m) ? m : []; draw(); });
         Shiny.addCustomMessageHandler('founds', function(m) { founds = Array.isArray(m) ? m : []; draw(); });
+        Shiny.addCustomMessageHandler('areas', function(m) { areas = Array.isArray(m) ? m : []; draw(); });
       }")
   })
 
@@ -902,6 +975,8 @@ server <- function(input, output, session) {
     st <- states(); asof <- asof_time(); today <- as.Date(asof, tz = TZ); bcols <- bird_colours()
     chev <- list()                                     # every bird's lines; the browser shows the ones it should (vis = shown without a tick)
     founds <- list()                                   # every found bird's star
+    area_info <- character()
+    areas <- list()                                    # birds with enough signals whose cones all overlap: one general area instead of lines
     now_day <- as.Date(Sys.time(), tz = TZ)
     for (s in st) {
       if (isTRUE(s$never)) next
@@ -910,13 +985,21 @@ server <- function(input, output, session) {
       tag <- if (dago >= 1 && !isTRUE(input$asof_on)) sprintf("%d day%s ago", dago, if (dago == 1) "" else "s") else ""   # no tag in the yesterday view
       op <- max(0.15, 1 - as.numeric(difftime(asof, s$last_time, units = "days")) / FADE_DAYS)
       col <- unname(bcols[as.character(s$bird)]); if (length(col) != 1 || is.na(col)) col <- "#555555"   # plain text, no names attached
+      ar <- if (!is.null(s$lines)) tryCatch(cone_area(s$lines), error = function(e) NULL) else NULL
+      if (!is.null(ar) && !all(is.finite(ar))) ar <- NULL
+      if (!is.null(ar)) area_info <- c(area_info, sprintf("bird %d (%d signals, %.2f km2, %d corners)", s$bird, nrow(s$lines), attr(ar, "km2"), nrow(ar)))
+      if (!is.null(ar))
+        areas[[length(areas) + 1]] <- list(
+          bird = s$bird, col = col, op = op, vis = vis, tag = tag, n = nrow(s$lines),
+          pts = unname(lapply(seq_len(nrow(ar)), function(i) as.numeric(c(ar[i, 2], ar[i, 1])))),   # plain [lat, lon] pairs, no names
+          label = sprintf("Bird %d: general area from %d signals (cones of +/-%d degrees all overlap)", s$bird, nrow(s$lines), CONE_DEG))
       if (!is.null(s$lines)) {
         len <- line_lengths(s$lines)
         for (i in seq_len(nrow(s$lines))) {
           l <- s$lines[i, ]
           ep <- end_point(l$lon, l$lat, l$bearing, len[i])
           chev[[length(chev) + 1]] <- list(
-            lon = l$lon, lat = l$lat, elon = ep[["lon"]], elat = ep[["lat"]], op = op, col = col, vis = vis,
+            lon = l$lon, lat = l$lat, elon = ep[["lon"]], elat = ep[["lat"]], op = op, col = col, vis = vis, inarea = !is.null(ar),
             bird = s$bird, brg = l$bearing, key = l$key, tag = tag,
             label = sprintf("Bird %d: %d\u00b0 from %s (%s, %.1f km), signal %s", s$bird, round(l$bearing),
                             htmltools::htmlEscape(l$key), if (nzchar(l$strength)) l$strength else "strength not given", round(len[i], 1),
@@ -931,6 +1014,8 @@ server <- function(input, output, session) {
     }
     session$sendCustomMessage("chevrons", unname(chev))
     session$sendCustomMessage("founds", unname(founds))
+    session$sendCustomMessage("areas", unname(areas))
+    area_text(if (length(area_info)) paste(area_info, collapse = "; ") else "none")
   })
 
   teams <- reactive({ req(authed()); tick(); read_teams(stations) })
